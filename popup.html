@@ -1,0 +1,117 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>Auto Refresh Tab</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <header class="app-header">
+      <div class="brand">
+        <span class="brand-icon">↻</span>
+        <div>
+          <h1>Auto Refresh</h1>
+          <p class="subtitle" id="job-count">No active jobs</p>
+        </div>
+      </div>
+    </header>
+
+    <form id="job-form" class="card">
+      <div id="edit-banner" class="edit-banner hidden">
+        <span>✎ Editing job</span>
+        <button type="button" id="cancel-edit" class="link-btn">Cancel</button>
+      </div>
+
+      <label for="urls">Page URL(s)</label>
+      <textarea id="urls" rows="2" placeholder="https://example.com/page" required></textarea>
+
+      <label>Refresh mode</label>
+      <div class="segmented" id="mode-segmented" role="tablist">
+        <button type="button" class="seg-btn active" data-mode="interval">Interval</button>
+        <button type="button" class="seg-btn" data-mode="specific">Specific time</button>
+        <button type="button" class="seg-btn" data-mode="random">Random</button>
+      </div>
+      <input type="hidden" id="mode" value="interval" />
+
+      <div class="mode-panel" id="fields-interval">
+        <div class="field-row">
+          <div class="field">
+            <label>Minutes</label>
+            <input type="number" id="intervalMin" min="0" value="0" />
+          </div>
+          <div class="field">
+            <label>Seconds</label>
+            <input type="number" id="intervalSec" min="0" value="30" />
+          </div>
+        </div>
+      </div>
+
+      <div class="mode-panel" id="fields-specific">
+        <div class="field">
+          <label for="specificTime">Daily at</label>
+          <div class="time-field-wrap">
+            <input type="time" id="specificTime" readonly placeholder="Click to pick a time" />
+            <button type="button" id="clock-toggle" class="icon-btn" title="Pick on clock">🕐</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="mode-panel" id="fields-random">
+        <span class="mini-label">Minimum</span>
+        <div class="field-row">
+          <div class="field">
+            <label>Minutes</label>
+            <input type="number" id="randomMinMin" min="0" value="0" />
+          </div>
+          <div class="field">
+            <label>Seconds</label>
+            <input type="number" id="randomMinSec" min="0" value="10" />
+          </div>
+        </div>
+        <span class="mini-label">Maximum</span>
+        <div class="field-row">
+          <div class="field">
+            <label>Minutes</label>
+            <input type="number" id="randomMaxMin" min="0" value="1" />
+          </div>
+          <div class="field">
+            <label>Seconds</label>
+            <input type="number" id="randomMaxSec" min="0" value="0" />
+          </div>
+        </div>
+      </div>
+
+      <button type="submit" id="submit-btn" class="primary-btn">
+        <span class="btn-label">Add job</span>
+      </button>
+    </form>
+
+    <div id="alarm-banner" class="alarm-banner hidden">
+      <span>🔔 Human verification required — auto-refresh paused</span>
+      <button type="button" id="stop-alarm-sound" class="link-btn">Stop sound</button>
+    </div>
+
+    <ul id="job-list"></ul>
+
+    <div class="clock-popover hidden" id="clock-popover">
+      <div class="clock-digital">
+        <button type="button" class="clock-digital-btn active" id="clock-seg-hour" data-ring="hour">--</button>
+        <span class="clock-colon">:</span>
+        <button type="button" class="clock-digital-btn" id="clock-seg-minute" data-ring="minute">--</button>
+        <div class="clock-ampm">
+          <button type="button" class="clock-ampm-btn" id="clock-am" data-period="AM">AM</button>
+          <button type="button" class="clock-ampm-btn" id="clock-pm" data-period="PM">PM</button>
+        </div>
+      </div>
+
+      <div class="clock-face" id="clock-face">
+        <div class="clock-hand" id="clock-hand"></div>
+        <div class="clock-center"></div>
+      </div>
+
+      <button type="button" class="link-btn clock-done" id="clock-done">Done</button>
+    </div>
+
+    <script src="popup.js"></script>
+  </body>
+</html>
