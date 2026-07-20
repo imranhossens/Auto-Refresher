@@ -143,7 +143,11 @@ function describeJob(job) {
 
 async function getJobs() {
   const { jobs } = await chrome.storage.local.get("jobs");
-  return (jobs || []).map((j) => (j.urls ? j : { ...j, urls: j.url ? [j.url] : [] }));
+  if (!Array.isArray(jobs)) return [];
+  // Sanitize each job to guard against tampered storage values.
+  return jobs
+    .filter((j) => j && typeof j === "object" && typeof j.id === "string")
+    .map((j) => (j.urls ? j : { ...j, urls: j.url ? [j.url] : [] }));
 }
 
 async function saveJobs(jobs) {
@@ -363,9 +367,20 @@ form.addEventListener("submit", async (e) => {
     .map((u) => u.trim())
     .filter(Boolean);
 
-  if (urls.length === 0 || !urls.every((u) => /^https?:\/\//i.test(u))) {
+  if (urls.length === 0) {
     alert("Enter one or more full URLs (one per line), each starting with http:// or https://");
     return;
+  }
+
+  // Secondary validation: ensure each URL is well-formed and truly http/https.
+  for (const u of urls) {
+    try {
+      const parsed = new URL(u);
+      if (parsed.protocol !== "http:" && parsed.protocol !== "https:") throw new Error();
+    } catch {
+      alert(`Invalid URL: ${u}\nEach URL must start with http:// or https://`);
+      return;
+    }
   }
 
   const mode = modeInput.value;

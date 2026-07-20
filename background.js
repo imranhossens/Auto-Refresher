@@ -1,5 +1,24 @@
 const scheduledVersions = new Map();
 
+// Only accept messages from our own extension pages/service worker.
+const OWN_EXTENSION_ID = chrome.runtime.id;
+
+// Validate that a value is a safe RFC-4122 v4 UUID (what crypto.randomUUID() produces).
+function isValidUUID(v) {
+  return typeof v === "string" && /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(v);
+}
+
+// Validate a URL string is http/https and can be parsed safely.
+function isSafeUrl(u) {
+  if (typeof u !== "string") return false;
+  try {
+    const parsed = new URL(u);
+    return parsed.protocol === "http:" || parsed.protocol === "https:";
+  } catch {
+    return false;
+  }
+}
+
 function totalSeconds(min, sec) {
   return (Number(min) || 0) * 60 + (Number(sec) || 0);
 }
@@ -192,7 +211,8 @@ function watchHumanCheckInPage(jobId) {
 }
 
 async function injectHumanCheckWatcher(job) {
-  const urls = job.urls || (job.url ? [job.url] : []);
+  const rawUrls = job.urls || (job.url ? [job.url] : []);
+  const urls = rawUrls.filter(isSafeUrl);
   for (const url of urls) {
     try {
       const tabs = await chrome.tabs.query({ url });
@@ -215,7 +235,8 @@ async function injectHumanCheckWatcher(job) {
 }
 
 async function refreshTab(job) {
-  const urls = job.urls || (job.url ? [job.url] : []);
+  const rawUrls = job.urls || (job.url ? [job.url] : []);
+  const urls = rawUrls.filter(isSafeUrl);
   let anyMatched = false;
   let anyFailed = false;
   let failReason = null;
@@ -262,7 +283,8 @@ async function refreshTab(job) {
 // Passive check used while paused on an error: looks at the page as-is,
 // without reloading, so it doesn't interrupt someone solving a captcha.
 async function checkPageState(job) {
-  const urls = job.urls || (job.url ? [job.url] : []);
+  const rawUrls = job.urls || (job.url ? [job.url] : []);
+  const urls = rawUrls.filter(isSafeUrl);
   let anyChallenge = false;
   let anyFound = false;
 
@@ -347,6 +369,9 @@ async function syncAlertSound() {
 }
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  // Reject any message that did not originate from our own extension.
+  if (!sender || sender.id !== OWN_EXTENSION_ID) return;
+
   if (msg.type === "mute-human-check-alert") {
     (async () => {
       const errors = await getJobErrors();
@@ -361,6 +386,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   }
 
   if (msg.type === "human-check-cleared") {
+    // Validate that jobId is a proper UUID before using it as a storage/alarm key.
+    if (!isValidUUID(msg.jobId)) return;
     (async () => {
       const errors = await getJobErrors();
       if (errors[msg.jobId] && errors[msg.jobId].reason === "human-check") {
