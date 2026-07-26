@@ -372,6 +372,32 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   // Reject any message that did not originate from our own extension.
   if (!sender || sender.id !== OWN_EXTENSION_ID) return;
 
+  if (msg.type === 'getAutoReloadConfig') {
+    const tabId = sender.tab?.id;
+    if (!tabId) {
+      sendResponse({ enabled: false });
+      return;
+    }
+    
+    chrome.storage.local.get('autoReloadTabs').then((result) => {
+      const autoReloadTabs = result.autoReloadTabs || {};
+      const config = autoReloadTabs[tabId];
+      if (config && config.enabled) {
+        sendResponse({ enabled: true, interval: config.interval });
+      } else {
+        sendResponse({ enabled: false });
+      }
+    });
+    return true; // Keep message channel open for async response
+  }
+  
+  if (msg.type === 'settingsChanged') {
+    updateClickBehavior().then(() => {
+      sendResponse({ success: true });
+    });
+    return true;
+  }
+
   if (msg.type === "mute-human-check-alert") {
     (async () => {
       const errors = await getJobErrors();
@@ -442,8 +468,17 @@ async function syncAlarms() {
   }
 }
 
-chrome.runtime.onInstalled.addListener(() => syncAlarms().then(() => syncAlertSound()));
-chrome.runtime.onStartup.addListener(() => syncAlarms().then(() => syncAlertSound()));
+async function handleInstalledOrStartup(isInstalled) {
+  if (isInstalled) {
+    createContextMenus();
+  }
+  await updateClickBehavior();
+  await syncAlarms();
+  await syncAlertSound();
+}
+
+chrome.runtime.onInstalled.addListener(() => handleInstalledOrStartup(true));
+chrome.runtime.onStartup.addListener(() => handleInstalledOrStartup(false));
 
 chrome.storage.onChanged.addListener((changes, area) => {
   if (area === "local" && changes.jobs) {
@@ -569,3 +604,208 @@ async function updateBadge() {
 chrome.alarms.create("badge-tick", { periodInMinutes: 1 });
 setInterval(updateBadge, 1000);
 updateBadge();
+
+// --- Tab Reload features ---
+
+// Helper to reload a single tab with option to bypass cache
+async function reloadTab(tabId, bypassCache = false) {
+  try {
+    await chrome.tabs.reload(tabId, { bypassCache });
+  } catch (err) {
+    console.error(`Failed to reload tab ${tabId}:`, err);
+  }
+}
+
+// Core reload logic for various targets
+async function performReload(actionType, bypassCache = false) {
+  const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  
+  switch (actionType) {
+    case 'all': {
+      const tabs = await chrome.tabs.query({ currentWindow: true });
+      for (const tab of tabs) {
+        await reloadTab(tab.id, bypassCache);
+      }
+      break;
+    }
+    
+    case 'active': {
+      if (activeTab) {
+        await reloadTab(activeTab.id, bypassCache);
+      }
+      break;
+    }
+    
+    case 'selected': {
+      const tabs = await chrome.tabs.query({ currentWindow: true });
+      const selectedTabs = tabs.filter(t => t.highlighted);
+      
+      // Move selected tabs to the left
+      for (let i = 0; i < selectedTabs.length; i++) {
+        try {
+          await chrome.tabs.move(selectedTabs[i].id, { index: i });
+        } catch (e) {
+          console.error("Failed to move tab", e);
+        }
+      }
+      
+      // Reload the moved/selected tabs
+      for (const tab of selectedTabs) {
+        await reloadTab(tab.id, bypassCache);
+      }
+      break;
+    }
+    
+    case 'domain': {
+      if (activeTab && activeTab.url) {
+        try {
+          const activeDomain = new URL(activeTab.url).hostname;
+          const tabs = await chrome.tabs.query({ currentWindow: true });
+          for (const tab of tabs) {
+            try {
+              if (tab.url && new URL(tab.url).hostname === activeDomain) {
+                await reloadTab(tab.id, bypassCache);
+              }
+            } catch (e) {
+              // Ignore invalid URLs
+            }
+          }
+        } catch (e) {
+          console.error("Error parsing active tab URL", e);
+        }
+      }
+      break;
+    }
+    
+    case 'left': {
+      if (activeTab) {
+        const tabs = await chrome.tabs.query({ currentWindow: true });
+        const activeIndex = activeTab.index;
+        for (const tab of tabs) {
+          if (tab.index < activeIndex) {
+            await reloadTab(tab.id, bypassCache);
+          }
+        }
+      }
+      break;
+    }
+    
+    case 'right': {
+      if (activeTab) {
+        const tabs = await chrome.tabs.query({ currentWindow: true });
+        const activeIndex = activeTab.index;
+        for (const tab of tabs) {
+          if (tab.index > activeIndex) {
+            await reloadTab(tab.id, bypassCache);
+          }
+        }
+      }
+      break;
+    }
+    
+    case 'others': {
+      if (activeTab) {
+        const tabs = await chrome.tabs.query({ currentWindow: true });
+        for (const tab of tabs) {
+          if (tab.id !== activeTab.id) {
+            await reloadTab(tab.id, bypassCache);
+          }
+        }
+      }
+      break;
+    }
+  }
+}
+
+// Context Menu Setup
+const CONTEXT_MENUS = [
+  { id: 'reload-all', title: 'Reload All Tabs' },
+  { id: 'reload-selected', title: 'Reload Selected Tabs (Move Left)' },
+  { id: 'reload-domain', title: 'Reload Same Domain Tabs' },
+  { id: 'reload-left', title: 'Reload Tabs to the Left' },
+  { id: 'reload-right', title: 'Reload Tabs to the Right' },
+  { id: 'separator', type: 'separator' },
+  { id: 'options', title: 'Configure Action Settings...' }
+];
+
+function createContextMenus() {
+  chrome.contextMenus.removeAll(() => {
+    for (const menu of CONTEXT_MENUS) {
+      chrome.contextMenus.create({
+        ...menu,
+        contexts: ['action']
+      });
+    }
+  });
+}
+
+// Set click behavior (popup vs direct quick reload)
+async function updateClickBehavior() {
+  const { clickBehavior = 'popup' } = await chrome.storage.local.get('clickBehavior');
+  if (clickBehavior === 'popup') {
+    await chrome.action.setPopup({ popup: 'popup.html' });
+  } else {
+    await chrome.action.setPopup({ popup: '' });
+  }
+}
+
+// Listen for direct clicks on the action icon (only fires if default_popup is cleared)
+chrome.action.onClicked.addListener(async () => {
+  const { clickBehavior = 'popup', bypassCache = false } = await chrome.storage.local.get(['clickBehavior', 'bypassCache']);
+  if (clickBehavior !== 'popup') {
+    await performReload(clickBehavior, bypassCache);
+  }
+});
+
+// Context Menu clicks
+chrome.contextMenus.onClicked.addListener(async (info) => {
+  if (info.menuItemId === 'options') {
+    chrome.runtime.openOptionsPage();
+    return;
+  }
+  
+  const { bypassCache = false } = await chrome.storage.local.get('bypassCache');
+  
+  switch (info.menuItemId) {
+    case 'reload-all':
+      await performReload('all', bypassCache);
+      break;
+    case 'reload-selected':
+      await performReload('selected', bypassCache);
+      break;
+    case 'reload-domain':
+      await performReload('domain', bypassCache);
+      break;
+    case 'reload-left':
+      await performReload('left', bypassCache);
+      break;
+    case 'reload-right':
+      await performReload('right', bypassCache);
+      break;
+  }
+});
+
+// Keyboard Commands
+chrome.commands.onCommand.addListener(async (command) => {
+  const { bypassCache = false } = await chrome.storage.local.get('bypassCache');
+  switch (command) {
+    case 'reload-all':
+      await performReload('all', bypassCache);
+      break;
+    case 'reload-selected':
+      await performReload('selected', bypassCache);
+      break;
+    case 'reload-domain':
+      await performReload('domain', bypassCache);
+      break;
+    case 'reload-left':
+      await performReload('left', bypassCache);
+      break;
+    case 'reload-right':
+      await performReload('right', bypassCache);
+      break;
+    case 'reload-others':
+      await performReload('others', bypassCache);
+      break;
+  }
+});

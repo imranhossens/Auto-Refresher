@@ -2,97 +2,242 @@
 <html>
   <head>
     <meta charset="utf-8" />
-    <title>Auto Refresh Tab</title>
+    <title>Auto Refresh & Tab Reload</title>
     <link rel="stylesheet" href="popup.css" />
   </head>
   <body>
-    <header class="app-header">
-      <div class="brand">
-        <span class="brand-icon">↻</span>
-        <div>
-          <h1>Auto Refresh</h1>
-          <p class="subtitle" id="job-count">No active jobs</p>
-        </div>
+    <header class="header">
+      <div class="logo-container">
+        <img src="icons/icon48.png" alt="Logo" class="logo-img">
+      </div>
+      <div class="title-container">
+        <h1>Auto Refresh & Reload</h1>
+        <p class="subtitle" id="job-count">No active jobs</p>
       </div>
     </header>
 
-    <form id="job-form" class="card">
-      <div id="edit-banner" class="edit-banner hidden">
-        <span>✎ Editing job</span>
-        <button type="button" id="cancel-edit" class="link-btn">Cancel</button>
-      </div>
-
-      <label for="urls">Page URL(s)</label>
-      <textarea id="urls" rows="2" placeholder="https://example.com/page" required></textarea>
-
-      <label>Refresh mode</label>
-      <div class="segmented" id="mode-segmented" role="tablist">
-        <button type="button" class="seg-btn active" data-mode="interval">Interval</button>
-        <button type="button" class="seg-btn" data-mode="specific">Specific time</button>
-        <button type="button" class="seg-btn" data-mode="random">Random</button>
-      </div>
-      <input type="hidden" id="mode" value="interval" />
-
-      <div class="mode-panel" id="fields-interval">
-        <div class="field-row">
-          <div class="field">
-            <label>Minutes</label>
-            <input type="number" id="intervalMin" min="0" value="0" />
-          </div>
-          <div class="field">
-            <label>Seconds</label>
-            <input type="number" id="intervalSec" min="0" value="30" />
-          </div>
-        </div>
-      </div>
-
-      <div class="mode-panel" id="fields-specific">
-        <div class="field">
-          <label for="specificTime">Daily at</label>
-          <div class="time-field-wrap">
-            <input type="time" id="specificTime" readonly placeholder="Click to pick a time" />
-            <button type="button" id="clock-toggle" class="icon-btn" title="Pick on clock">🕐</button>
-          </div>
-        </div>
-      </div>
-
-      <div class="mode-panel" id="fields-random">
-        <span class="mini-label">Minimum</span>
-        <div class="field-row">
-          <div class="field">
-            <label>Minutes</label>
-            <input type="number" id="randomMinMin" min="0" value="0" />
-          </div>
-          <div class="field">
-            <label>Seconds</label>
-            <input type="number" id="randomMinSec" min="0" value="10" />
-          </div>
-        </div>
-        <span class="mini-label">Maximum</span>
-        <div class="field-row">
-          <div class="field">
-            <label>Minutes</label>
-            <input type="number" id="randomMaxMin" min="0" value="1" />
-          </div>
-          <div class="field">
-            <label>Seconds</label>
-            <input type="number" id="randomMaxSec" min="0" value="0" />
-          </div>
-        </div>
-      </div>
-
-      <button type="submit" id="submit-btn" class="primary-btn">
-        <span class="btn-label">Add job</span>
+    <!-- Tab Navigation -->
+    <div class="tabs-nav" role="tablist">
+      <button type="button" class="tab-nav-btn active" data-tab="tab-tab-reload">Tab Reload</button>
+      <button type="button" class="tab-nav-btn" data-tab="tab-auto-refresh">
+        Auto Refresh <span id="nav-badge-count" class="nav-badge hidden">0</span>
       </button>
-    </form>
-
-    <div id="alarm-banner" class="alarm-banner hidden">
-      <span>🔔 Human verification required — auto-refresh paused</span>
-      <button type="button" id="stop-alarm-sound" class="link-btn">Stop sound</button>
     </div>
 
-    <ul id="job-list"></ul>
+    <!-- Tab 1: Auto Refresh Section -->
+    <div id="tab-auto-refresh" class="tab-content hidden">
+      <form id="job-form" class="card">
+        <div id="edit-banner" class="edit-banner hidden">
+          <span>
+            <svg class="svg-icon" viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align: middle; margin-right: 4px;">
+              <path d="M12 20h9"></path>
+              <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"></path>
+            </svg>
+            Editing job
+          </span>
+          <button type="button" id="cancel-edit" class="link-btn">Cancel</button>
+        </div>
 
+        <label for="urls">Page URL(s)</label>
+        <textarea id="urls" rows="2" placeholder="https://example.com/page" required></textarea>
+
+        <label>Refresh mode</label>
+        <div class="segmented" id="mode-segmented" role="tablist">
+          <button type="button" class="seg-btn active" data-mode="interval">Interval</button>
+          <button type="button" class="seg-btn" data-mode="specific">Specific time</button>
+          <button type="button" class="seg-btn" data-mode="random">Random</button>
+        </div>
+        <input type="hidden" id="mode" value="interval" />
+
+        <div class="mode-panel" id="fields-interval">
+          <div class="field-row">
+            <div class="field">
+              <label>Minutes</label>
+              <input type="number" id="intervalMin" min="0" value="0" />
+            </div>
+            <div class="field">
+              <label>Seconds</label>
+              <input type="number" id="intervalSec" min="0" value="30" />
+            </div>
+          </div>
+        </div>
+
+        <div class="mode-panel" id="fields-specific">
+          <div class="field">
+            <label for="specificTime">Daily at</label>
+            <div class="time-field-wrap">
+              <input type="time" id="specificTime" readonly placeholder="Click to pick a time" />
+            </div>
+          </div>
+        </div>
+
+        <div class="mode-panel" id="fields-random">
+          <div class="random-fields-row">
+            <div class="random-group">
+              <span class="mini-label">Minimum</span>
+              <div class="field-row">
+                <div class="field">
+                  <label>Mins</label>
+                  <input type="number" id="randomMinMin" min="0" value="0" />
+                </div>
+                <div class="field">
+                  <label>Secs</label>
+                  <input type="number" id="randomMinSec" min="0" value="10" />
+                </div>
+              </div>
+            </div>
+            
+            <div class="random-group">
+              <span class="mini-label">Maximum</span>
+              <div class="field-row">
+                <div class="field">
+                  <label>Mins</label>
+                  <input type="number" id="randomMaxMin" min="0" value="1" />
+                </div>
+                <div class="field">
+                  <label>Secs</label>
+                  <input type="number" id="randomMaxSec" min="0" value="0" />
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <button type="submit" id="submit-btn" class="primary-btn">
+          <span class="btn-label">Add</span>
+        </button>
+      </form>
+
+      <div id="alarm-banner" class="alarm-banner hidden">
+        <span>
+          <svg class="svg-icon" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="vertical-align: middle; margin-right: 4px;">
+            <path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"></path>
+            <line x1="12" y1="9" x2="12" y2="13"></line>
+            <line x1="12" y1="17" x2="12.01" y2="17"></line>
+          </svg>
+          Human verification required — auto-refresh paused
+        </span>
+        <button type="button" id="stop-alarm-sound" class="link-btn">Stop sound</button>
+      </div>
+
+      <ul id="job-list"></ul>
+    </div>
+
+    <!-- Tab 2: Tab Reload Section -->
+    <div id="tab-tab-reload" class="tab-content">
+      <div class="card">
+        <!-- Main Reload All Section -->
+        <div class="main-action">
+          <button id="btn-reload-all" class="primary-btn" type="button">
+            <svg class="svg-icon" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon>
+            </svg>
+            Reload All Tabs
+          </button>
+        </div>
+
+        <!-- Reload Options Grid -->
+        <div class="options-grid">
+          <button id="btn-reload-selected" class="reload-grid-btn" type="button" title="Reorder selected tabs to the left and reload them">
+            <svg class="svg-icon" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+              <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+            </svg>
+            <div class="btn-label-group">
+              <span class="btn-label">Reload Selected</span>
+              <span id="selected-count" class="btn-subtext">Calculating...</span>
+            </div>
+          </button>
+          
+          <button id="btn-reload-domain" class="reload-grid-btn" type="button" title="Reload all tabs with the same domain name">
+            <svg class="svg-icon" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="12" cy="12" r="10"></circle>
+              <line x1="2" y1="12" x2="22" y2="12"></line>
+              <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"></path>
+            </svg>
+            <div class="btn-label-group">
+              <span class="btn-label">Reload Same Domain</span>
+              <span id="domain-name" class="btn-subtext">Detecting...</span>
+            </div>
+          </button>
+          
+          <button id="btn-reload-left" class="reload-grid-btn" type="button" title="Reload tabs to the left of the active tab">
+            <svg class="svg-icon" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <line x1="19" y1="12" x2="5" y2="12"></line>
+              <polyline points="12 19 5 12 12 5"></polyline>
+            </svg>
+            <span class="btn-label">Reload Left</span>
+          </button>
+          
+          <button id="btn-reload-right" class="reload-grid-btn" type="button" title="Reload tabs to the right of the active tab">
+            <svg class="svg-icon" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <line x1="5" y1="12" x2="19" y2="12"></line>
+              <polyline points="12 5 19 12 12 19"></polyline>
+            </svg>
+            <span class="btn-label">Reload Right</span>
+          </button>
+
+          <button id="btn-reload-others" class="reload-grid-btn span-two" type="button" title="Reload all tabs except the active one">
+            <svg class="svg-icon" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M23 4v6h-6"></path>
+              <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path>
+            </svg>
+            <span class="btn-label">Reload Other Tabs</span>
+          </button>
+        </div>
+
+        <!-- Divider -->
+        <hr class="divider">
+
+        <!-- Global Controls -->
+        <div class="panel global-controls">
+          <div class="control-row">
+            <label for="toggle-bypass-cache" class="toggle-label" title="Force tabs to reload resources from the network instead of local cache">
+              Bypass Cache (Hard Reload)
+            </label>
+            <label class="switch">
+              <input type="checkbox" id="toggle-bypass-cache">
+              <span class="switch-track"></span>
+            </label>
+          </div>
+        </div>
+
+        <!-- Settings (Icon Click Behavior) -->
+        <div class="panel settings">
+          <label for="select-click-behavior" style="display: flex; align-items: center; gap: 4px;">
+            <svg class="svg-icon" viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="12" cy="12" r="3"></circle>
+              <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+            </svg>
+            Icon Click Action
+          </label>
+          <div class="click-settings">
+            <select id="select-click-behavior">
+              <option value="popup">Open Control Panel (Popup)</option>
+              <option value="all">Quick Reload All Tabs</option>
+              <option value="active">Quick Reload Active Tab</option>
+              <option value="selected">Quick Reload Selected Tabs</option>
+              <option value="domain">Quick Reload Same Domain</option>
+            </select>
+          </div>
+          <p id="behavior-hint" class="hint hidden">
+            💡 If direct reload is active, right-click the icon and choose "Configure Action Settings..." to reopen this control panel.
+          </p>
+        </div>
+
+        <!-- Dashboard Shortcut Button -->
+        <button id="btn-open-options" class="primary-btn dashboard-btn" type="button">
+          <svg class="svg-icon" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <line x1="18" y1="20" x2="18" y2="10"></line>
+            <line x1="12" y1="20" x2="12" y2="4"></line>
+            <line x1="6" y1="20" x2="6" y2="14"></line>
+          </svg>
+          View Options Dashboard
+        </button>
+      </div>
+    </div>
+
+    <!-- Shared clock popover -->
     <div class="clock-popover hidden" id="clock-popover">
       <div class="clock-digital">
         <button type="button" class="clock-digital-btn active" id="clock-seg-hour" data-ring="hour">--</button>

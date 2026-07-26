@@ -45,7 +45,8 @@ function stopAlarm() {
   beepTimer = null;
 }
 
-chrome.runtime.onMessage.addListener((msg) => {
+chrome.runtime.onMessage.addListener((msg, sender) => {
+  if (sender && sender.id !== chrome.runtime.id) return;
   if (msg.type === "start-alarm-sound") startAlarm();
   if (msg.type === "stop-alarm-sound") stopAlarm();
 });

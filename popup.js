@@ -181,7 +181,7 @@ function startEdit(job) {
 function stopEdit() {
   editingId = null;
   editBanner.classList.add("hidden");
-  submitBtn.querySelector(".btn-label").textContent = "Add job";
+  submitBtn.querySelector(".btn-label").textContent = "Add";
   schedulePrefsSave();
 }
 
@@ -189,7 +189,7 @@ function cancelEdit() {
   const snapshot = prefsSnapshotBeforeEdit;
   editingId = null;
   editBanner.classList.add("hidden");
-  submitBtn.querySelector(".btn-label").textContent = "Add job";
+  submitBtn.querySelector(".btn-label").textContent = "Add";
   applyPrefs(snapshot);
 }
 
@@ -226,6 +226,21 @@ async function renderJobs() {
     jobs.length === 0
       ? "No active jobs"
       : `${activeCount} active · ${jobs.length} total`;
+
+  const navBadge = document.getElementById("nav-badge-count");
+  if (navBadge) {
+    if (activeCount > 0) {
+      navBadge.textContent = activeCount;
+      navBadge.classList.remove("hidden");
+      
+      const hasError = Object.entries(jobErrors).some(
+        ([id, e]) => enabledIds.has(id) && e.reason === "human-check"
+      );
+      navBadge.classList.toggle("error-badge", hasError);
+    } else {
+      navBadge.classList.add("hidden");
+    }
+  }
 
   jobList.innerHTML = "";
   if (jobs.length === 0) {
@@ -438,12 +453,75 @@ form.addEventListener("submit", async (e) => {
 renderJobs();
 loadPrefs();
 
+// --- Auto-Refresh Keyboard Navigation ---
+function focusFirstTimeInput() {
+  const mode = document.getElementById("mode").value;
+  if (mode === "interval") {
+    document.getElementById("intervalMin").focus();
+  } else if (mode === "specific") {
+    document.getElementById("specificTime").click(); // Open analog clock face
+  } else if (mode === "random") {
+    document.getElementById("randomMinMin").focus();
+  }
+}
+
+const urlsTextarea = document.getElementById("urls");
+if (urlsTextarea) {
+  urlsTextarea.addEventListener("keydown", (e) => {
+    // Pressing Enter without Shift moves to the first time selection input
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      focusFirstTimeInput();
+    }
+  });
+}
+
+const intervalMinInput = document.getElementById("intervalMin");
+if (intervalMinInput) {
+  intervalMinInput.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      document.getElementById("intervalSec").focus();
+    }
+  });
+}
+
+const randomMinMinInput = document.getElementById("randomMinMin");
+if (randomMinMinInput) {
+  randomMinMinInput.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      document.getElementById("randomMinSec").focus();
+    }
+  });
+}
+
+const randomMinSecInput = document.getElementById("randomMinSec");
+if (randomMinSecInput) {
+  randomMinSecInput.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      document.getElementById("randomMaxMin").focus();
+    }
+  });
+}
+
+const randomMaxMinInput = document.getElementById("randomMaxMin");
+if (randomMaxMinInput) {
+  randomMaxMinInput.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      document.getElementById("randomMaxSec").focus();
+    }
+  });
+}
+
 chrome.storage.onChanged.addListener((changes, area) => {
   if (area === "local" && (changes.jobs || changes.jobErrors)) renderJobs();
 });
 
 // --- Analog clock picker for "Specific time" mode ---
-const clockToggle = document.getElementById("clock-toggle");
+// (clockToggle selector removed)
 const clockPopover = document.getElementById("clock-popover");
 const clockSegHour = document.getElementById("clock-seg-hour");
 const clockSegMinute = document.getElementById("clock-seg-minute");
@@ -568,7 +646,7 @@ function setPeriod(period) {
 }
 
 function positionClockPopover() {
-  const rect = clockToggle.getBoundingClientRect();
+  const rect = specificTimeInput.getBoundingClientRect();
   const popoverWidth = clockPopover.offsetWidth || 208;
   let left = rect.right - popoverWidth;
   left = Math.max(8, Math.min(left, window.innerWidth - popoverWidth - 8));
@@ -624,10 +702,7 @@ function toggleClock() {
   }
 }
 
-clockToggle.addEventListener("click", (e) => {
-  e.stopPropagation();
-  toggleClock();
-});
+// (clockToggle click listener removed)
 
 specificTimeInput.addEventListener("click", (e) => {
   e.stopPropagation();
@@ -679,3 +754,228 @@ document.addEventListener("click", (e) => {
 document.addEventListener("keydown", (e) => {
   if (e.key === "Escape") closeClock();
 });
+
+// --- Tab Switching Logic ---
+const tabButtons = document.querySelectorAll(".tab-nav-btn");
+const tabContents = document.querySelectorAll(".tab-content");
+
+tabButtons.forEach((btn) => {
+  btn.addEventListener("click", () => {
+    const target = btn.dataset.tab;
+    tabButtons.forEach((b) => b.classList.toggle("active", b === btn));
+    tabContents.forEach((c) => c.classList.toggle("hidden", c.id !== target));
+  });
+});
+
+// --- Tab Reload Feature Logic ---
+
+async function initTabReload() {
+  const btnReloadAll = document.getElementById("btn-reload-all");
+  const btnReloadSelected = document.getElementById("btn-reload-selected");
+  const btnReloadDomain = document.getElementById("btn-reload-domain");
+  const btnReloadLeft = document.getElementById("btn-reload-left");
+  const btnReloadRight = document.getElementById("btn-reload-right");
+  const btnReloadOthers = document.getElementById("btn-reload-others");
+  
+  const selectedCountText = document.getElementById("selected-count");
+  const domainNameText = document.getElementById("domain-name");
+  
+  const toggleBypassCache = document.getElementById("toggle-bypass-cache");
+  const selectClickBehavior = document.getElementById("select-click-behavior");
+  const behaviorHint = document.getElementById("behavior-hint");
+  
+  // (Auto reload timer variables removed)
+
+  // Helper to reload a single tab
+  async function reloadTab(tabId, bypassCache) {
+    try {
+      await chrome.tabs.reload(tabId, { bypassCache });
+    } catch (err) {
+      console.error(`Error reloading tab ${tabId}:`, err);
+    }
+  }
+
+  // Perform reload based on type
+  async function performReload(actionType, bypassCache) {
+    const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
+    
+    switch (actionType) {
+      case 'all': {
+        const tabs = await chrome.tabs.query({ currentWindow: true });
+        for (const tab of tabs) {
+          await reloadTab(tab.id, bypassCache);
+        }
+        break;
+      }
+      
+      case 'selected': {
+        const tabs = await chrome.tabs.query({ currentWindow: true });
+        const selectedTabs = tabs.filter(t => t.highlighted);
+        
+        // Move selected tabs to the left
+        for (let i = 0; i < selectedTabs.length; i++) {
+          try {
+            await chrome.tabs.move(selectedTabs[i].id, { index: i });
+          } catch (e) {
+            console.error("Failed to move tab", e);
+          }
+        }
+        
+        // Reload selected tabs
+        for (const tab of selectedTabs) {
+          await reloadTab(tab.id, bypassCache);
+        }
+        break;
+      }
+      
+      case 'domain': {
+        if (activeTab && activeTab.url) {
+          try {
+            const activeDomain = new URL(activeTab.url).hostname;
+            if (activeDomain) {
+              const tabs = await chrome.tabs.query({ currentWindow: true });
+              for (const tab of tabs) {
+                try {
+                  if (tab.url && new URL(tab.url).hostname === activeDomain) {
+                    await reloadTab(tab.id, bypassCache);
+                  }
+                } catch (e) {
+                  // Ignore internal/empty urls
+                }
+              }
+            }
+          } catch (e) {
+            console.error("Failed to parse active domain", e);
+          }
+        }
+        break;
+      }
+      
+      case 'left': {
+        if (activeTab) {
+          const tabs = await chrome.tabs.query({ currentWindow: true });
+          const activeIndex = activeTab.index;
+          for (const tab of tabs) {
+            if (tab.index < activeIndex) {
+              await reloadTab(tab.id, bypassCache);
+            }
+          }
+        }
+        break;
+      }
+      
+      case 'right': {
+        if (activeTab) {
+          const tabs = await chrome.tabs.query({ currentWindow: true });
+          const activeIndex = activeTab.index;
+          for (const tab of tabs) {
+            if (tab.index > activeIndex) {
+              await reloadTab(tab.id, bypassCache);
+            }
+          }
+        }
+        break;
+      }
+      
+      case 'others': {
+        if (activeTab) {
+          const tabs = await chrome.tabs.query({ currentWindow: true });
+          for (const tab of tabs) {
+            if (tab.id !== activeTab.id) {
+              await reloadTab(tab.id, bypassCache);
+            }
+          }
+        }
+        break;
+      }
+    }
+    
+    // Close the popup after action (makes the quick click experience cleaner)
+    window.close();
+  }
+
+  // Load active tab info & dynamic counts
+  const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
+  const allWindowTabs = await chrome.tabs.query({ currentWindow: true });
+  
+  // 1. Update Selected Tabs Count
+  const selectedTabs = allWindowTabs.filter(t => t.highlighted);
+  selectedCountText.textContent = `${selectedTabs.length} tab${selectedTabs.length > 1 ? 's' : ''} selected`;
+  
+  // 2. Update Domain name
+  let activeDomain = '';
+  if (activeTab && activeTab.url) {
+    try {
+      const parsedUrl = new URL(activeTab.url);
+      if (parsedUrl.protocol.startsWith('http')) {
+        activeDomain = parsedUrl.hostname;
+        domainNameText.textContent = activeDomain;
+      } else {
+        domainNameText.textContent = 'Non-web page';
+        btnReloadDomain.disabled = true;
+      }
+    } catch (e) {
+      domainNameText.textContent = 'Unavailable';
+      btnReloadDomain.disabled = true;
+    }
+  } else {
+    domainNameText.textContent = 'Unavailable';
+    btnReloadDomain.disabled = true;
+  }
+  
+  // 3. Load settings from storage
+  const settings = await chrome.storage.local.get(['bypassCache', 'clickBehavior', 'autoReloadTabs']);
+  
+  // Bypass Cache Toggle
+  const isBypassCache = settings.bypassCache || false;
+  toggleBypassCache.checked = isBypassCache;
+  
+  // Click Behavior Select
+  const clickBehavior = settings.clickBehavior || 'popup';
+  selectClickBehavior.value = clickBehavior;
+  if (clickBehavior !== 'popup') {
+    behaviorHint.classList.remove('hidden');
+  }
+
+  // (Auto reload status logic removed)
+
+  // --- Click Listeners for Reload Actions ---
+  btnReloadAll.addEventListener('click', () => performReload('all', toggleBypassCache.checked));
+  btnReloadSelected.addEventListener('click', () => performReload('selected', toggleBypassCache.checked));
+  btnReloadDomain.addEventListener('click', () => performReload('domain', toggleBypassCache.checked));
+  btnReloadLeft.addEventListener('click', () => performReload('left', toggleBypassCache.checked));
+  btnReloadRight.addEventListener('click', () => performReload('right', toggleBypassCache.checked));
+  btnReloadOthers.addEventListener('click', () => performReload('others', toggleBypassCache.checked));
+
+  // --- Toggle Bypass Cache ---
+  toggleBypassCache.addEventListener('change', async () => {
+    await chrome.storage.local.set({ bypassCache: toggleBypassCache.checked });
+  });
+
+  // --- Change Click Behavior ---
+  selectClickBehavior.addEventListener('change', async () => {
+    const val = selectClickBehavior.value;
+    await chrome.storage.local.set({ clickBehavior: val });
+    
+    if (val === 'popup') {
+      behaviorHint.classList.add('hidden');
+    } else {
+      behaviorHint.classList.remove('hidden');
+    }
+    
+    // Notify background.js to update the chrome.action popup setting
+    chrome.runtime.sendMessage({ type: 'settingsChanged' });
+  });
+
+  // --- View Dashboard Click Listener ---
+  const btnOpenOptions = document.getElementById("btn-open-options");
+  if (btnOpenOptions) {
+    btnOpenOptions.addEventListener("click", () => {
+      chrome.runtime.openOptionsPage();
+    });
+  }
+}
+
+// Initialise the reload feature logic
+initTabReload();
+
