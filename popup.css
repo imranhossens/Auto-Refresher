@@ -528,6 +528,12 @@ input:checked + .switch-track:before {
 }
 
 /* Settings drop down */
+.panel.settings label[for="select-click-behavior"] {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
 .click-settings select option {
   background: #15092d;
 }
@@ -579,6 +585,12 @@ input:checked + .switch-track:before {
   padding: 6px 10px;
   font-weight: 600;
   font-size: 11px;
+}
+
+.alarm-banner svg,
+.edit-banner svg {
+  vertical-align: middle;
+  margin-right: 4px;
 }
 
 /* Job List */
