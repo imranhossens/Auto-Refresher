@@ -22,6 +22,9 @@
       <button type="button" class="tab-nav-btn" data-tab="tab-auto-refresh">
         Auto Refresh <span id="nav-badge-count" class="nav-badge hidden">0</span>
       </button>
+      <button type="button" class="tab-nav-btn" data-tab="tab-groups">
+        Groups <span id="nav-groups-count" class="nav-badge hidden">0</span>
+      </button>
     </div>
 
     <!-- Tab 1: Auto Refresh Section -->
@@ -175,15 +178,54 @@
               <polyline points="12 5 19 12 12 19"></polyline>
             </svg>
             <span class="btn-label">Reload Right</span>
-          </button>
-
-          <button id="btn-reload-others" class="reload-grid-btn span-two" type="button" title="Reload all tabs except the active one">
+          </button>          <button id="btn-reload-others" class="reload-grid-btn span-two" type="button" title="Reload all tabs except the active one">
             <svg class="svg-icon" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
               <path d="M23 4v6h-6"></path>
               <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path>
             </svg>
             <span class="btn-label">Reload Other Tabs</span>
           </button>
+
+          <button id="btn-reload-specific" class="reload-grid-btn span-two" type="button" title="Reload all tabs if the specific target link is currently open in any tab">
+            <div class="btn-label-group">
+              <span class="btn-label">
+                <svg class="svg-icon" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path>
+                  <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path>
+                </svg>
+                Reload Specific Link
+              </span>
+              <span id="specific-link-status" class="btn-subtext">No target link set</span>
+            </div>
+          </button>
+        </div>
+
+        <!-- Specific Link Config Panel -->
+        <div class="panel specific-link-panel">
+          <div class="panel-header-row">
+            <label for="input-specific-url" title="Set specific URLs or keywords. When open in any tab, 'Reload Specific Link' reloads all tabs.">
+              <svg class="svg-icon" viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path>
+                <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path>
+              </svg>
+              Target Links (<span id="specific-links-count">0</span>)
+            </label>
+            <button id="btn-manage-links" class="gear-btn-modern" type="button" title="View, edit, or delete all links in central dashboard">
+              <svg class="gear-icon" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <circle cx="12" cy="12" r="3"></circle>
+                <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+              </svg>
+            </button>
+          </div>
+          <div class="url-input-group">
+            <input type="text" id="input-specific-url" placeholder="Add URL or keyword..." title="Enter specific URL or keyword" />
+            <button id="btn-add-specific-url" class="secondary-btn-sm" type="button" title="Add this link to target list">
+              + Add
+            </button>
+            <button id="btn-use-current-url" class="secondary-btn-sm" type="button" title="Add current active tab URL to target list">
+              + Current Tab
+            </button>
+          </div>
         </div>
 
         <!-- Divider -->
@@ -207,7 +249,7 @@
           <label for="select-click-behavior">
             <svg class="svg-icon" viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
               <circle cx="12" cy="12" r="3"></circle>
-              <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+              <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
             </svg>
             Icon Click Action
           </label>
@@ -218,6 +260,7 @@
               <option value="active">Quick Reload Active Tab</option>
               <option value="selected">Quick Reload Selected Tabs</option>
               <option value="domain">Quick Reload Same Domain</option>
+              <option value="specific">Quick Reload Specific Link</option>
             </select>
           </div>
           <p id="behavior-hint" class="hint hidden">
@@ -235,6 +278,90 @@
           View Options Dashboard
         </button>
       </div>
+    </div>
+
+    <!-- Tab 3: Groups Section -->
+    <div id="tab-groups" class="tab-content hidden">
+      <!-- Create / Edit Group Form -->
+      <form id="group-form" class="card">
+        <div id="group-edit-banner" class="edit-banner hidden">
+          <span>
+            <svg class="svg-icon" viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M12 20h9"></path>
+              <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"></path>
+            </svg>
+            Editing Group
+          </span>
+          <button type="button" id="cancel-group-edit" class="link-btn">Cancel</button>
+        </div>
+
+        <div class="field">
+          <label for="group-name-input">Group Name</label>
+          <input type="text" id="group-name-input" placeholder="e.g. Work, Social, News..." required />
+        </div>
+
+        <div class="field">
+          <label>Group Color</label>
+          <div class="color-picker-row">
+            <div class="color-swatches" id="color-swatches">
+              <!-- Common Classic Colors -->
+              <button type="button" class="color-swatch active" data-color="#3b82f6" style="background-color: #3b82f6 !important;" title="Classic Blue"></button>
+              <button type="button" class="color-swatch" data-color="#10b981" style="background-color: #10b981 !important;" title="Emerald Green"></button>
+              <button type="button" class="color-swatch" data-color="#f59e0b" style="background-color: #f59e0b !important;" title="Amber Gold"></button>
+              <button type="button" class="color-swatch" data-color="#ef4444" style="background-color: #ef4444 !important;" title="Crimson Red"></button>
+              <button type="button" class="color-swatch" data-color="#8b5cf6" style="background-color: #8b5cf6 !important;" title="Royal Purple"></button>
+
+              <!-- Sophisticated Modern Colors -->
+              <button type="button" class="color-swatch" data-color="#00F0FF" style="background-color: #00F0FF !important;" title="Electric Cyan"></button>
+              <button type="button" class="color-swatch" data-color="#ff007f" style="background-color: #ff007f !important;" title="Hot Pink"></button>
+              <button type="button" class="color-swatch" data-color="#ff6b4a" style="background-color: #ff6b4a !important;" title="Sunset Coral"></button>
+              <button type="button" class="color-swatch" data-color="#06b6d4" style="background-color: #06b6d4 !important;" title="Teal Aqua"></button>
+              <button type="button" class="color-swatch" data-color="#eab308" style="background-color: #eab308 !important;" title="Bright Gold"></button>
+            </div>
+
+            <!-- Custom Color Picker Icon Button -->
+            <button type="button" class="color-picker-btn" id="color-picker-btn-wrap" title="Open Custom Color Picker">
+              <svg class="palette-icon" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <circle cx="13.5" cy="6.5" r=".5" fill="currentColor"></circle>
+                <circle cx="17.5" cy="10.5" r=".5" fill="currentColor"></circle>
+                <circle cx="8.5" cy="7.5" r=".5" fill="currentColor"></circle>
+                <circle cx="6.5" cy="12.5" r=".5" fill="currentColor"></circle>
+                <path d="M12 2C6.5 2 2 6.5 2 12s4.5 10 10 10c.92 0 1.7-.77 1.7-1.7 0-.41-.16-.79-.43-1.07-.27-.28-.44-.66-.44-1.09 0-.93.77-1.7 1.7-1.7H17c2.76 0 5-2.24 5-5 0-4.42-4.03-8-10-8z"></path>
+              </svg>
+            </button>
+          </div>
+
+          <!-- Custom Theme-Matching Color Popover Panel -->
+          <div id="custom-color-popover" class="custom-color-popover hidden">
+            <div class="popover-header">
+              <span class="popover-title">Custom Color Code</span>
+              <div class="color-format-segmented">
+                <button type="button" class="format-btn active" data-format="hex">HEX</button>
+                <button type="button" class="format-btn" data-format="rgb">RGB</button>
+                <button type="button" class="format-btn" data-format="hsl">HSL</button>
+              </div>
+            </div>
+            <div class="popover-body">
+              <div class="color-preview-badge" id="custom-color-preview-dot" style="background-color: #3b82f6;"></div>
+              <input type="text" id="custom-color-text-input" value="#3B82F6" placeholder="#HEX code..." />
+              <label class="wheel-picker-trigger" title="Visual color wheel picker">
+                <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <circle cx="12" cy="12" r="10"></circle>
+                  <path d="M12 2a10 10 0 0 0 0 20z" fill="currentColor" opacity="0.3"></path>
+                </svg>
+                <input type="color" id="group-custom-color" value="#3b82f6" class="color-picker-hidden-input" />
+              </label>
+            </div>
+          </div>
+        </div>
+
+        <button type="submit" id="group-submit-btn" class="primary-btn">
+          <span class="btn-label">+ Add Group</span>
+        </button>
+      </form>
+
+      <!-- Groups List Container -->
+      <div id="groups-container" class="groups-list"></div>
     </div>
 
     <!-- Shared clock popover -->

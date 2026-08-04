@@ -714,26 +714,55 @@ async function performReload(actionType, bypassCache = false) {
       }
       break;
     }
+
+    case 'specific': {
+      let { specificUrls, specificUrl } = await chrome.storage.local.get(['specificUrls', 'specificUrl']);
+      if (!Array.isArray(specificUrls)) {
+        specificUrls = specificUrl ? [specificUrl] : [];
+      }
+      if (specificUrls.length === 0) break;
+
+      const tabs = await chrome.tabs.query({ currentWindow: true });
+      const targetTabs = tabs.filter(t => {
+        if (!t.url) return false;
+        const tabUrl = t.url.toLowerCase();
+        return specificUrls.some(u => {
+          const query = u.toLowerCase().trim();
+          return query && tabUrl.includes(query);
+        });
+      });
+
+      if (targetTabs.length > 0) {
+        for (const tab of targetTabs) {
+          await reloadTab(tab.id, bypassCache);
+        }
+      }
+      break;
+    }
   }
 }
 
 // Context Menu Setup
 const CONTEXT_MENUS = [
-  { id: 'reload-all', title: 'Reload All Tabs' },
-  { id: 'reload-selected', title: 'Reload Selected Tabs (Move Left)' },
-  { id: 'reload-domain', title: 'Reload Same Domain Tabs' },
-  { id: 'reload-left', title: 'Reload Tabs to the Left' },
-  { id: 'reload-right', title: 'Reload Tabs to the Right' },
-  { id: 'separator', type: 'separator' },
-  { id: 'options', title: 'Configure Action Settings...' }
+  { id: 'reload-all', title: 'Reload All Tabs', contexts: ['action'] },
+  { id: 'reload-selected', title: 'Reload Selected Tabs (Move Left)', contexts: ['action'] },
+  { id: 'reload-domain', title: 'Reload Same Domain Tabs', contexts: ['action'] },
+  { id: 'reload-left', title: 'Reload Tabs to the Left', contexts: ['action'] },
+  { id: 'reload-right', title: 'Reload Tabs to the Right', contexts: ['action'] },
+  { id: 'reload-specific', title: 'Reload Specific Link', contexts: ['action'] },
+  { id: 'separator-1', type: 'separator', contexts: ['action', 'page'] },
+  { id: 'set-specific-url', title: 'Set Page as Specific Reload Link', contexts: ['action', 'page'] },
+  { id: 'separator-2', type: 'separator', contexts: ['action'] },
+  { id: 'options', title: 'Configure Action Settings...', contexts: ['action'] }
 ];
 
 function createContextMenus() {
   chrome.contextMenus.removeAll(() => {
     for (const menu of CONTEXT_MENUS) {
+      const { contexts = ['action'], ...rest } = menu;
       chrome.contextMenus.create({
-        ...menu,
-        contexts: ['action']
+        ...rest,
+        contexts
       });
     }
   });
@@ -758,9 +787,33 @@ chrome.action.onClicked.addListener(async () => {
 });
 
 // Context Menu clicks
-chrome.contextMenus.onClicked.addListener(async (info) => {
+chrome.contextMenus.onClicked.addListener(async (info, tab) => {
   if (info.menuItemId === 'options') {
     chrome.runtime.openOptionsPage();
+    return;
+  }
+
+  if (info.menuItemId === 'set-specific-url') {
+    const targetTab = tab || (await chrome.tabs.query({ active: true, currentWindow: true }))[0];
+    if (targetTab && targetTab.url) {
+      let { specificUrls, specificUrl } = await chrome.storage.local.get(['specificUrls', 'specificUrl']);
+      if (!Array.isArray(specificUrls)) {
+        specificUrls = specificUrl ? [specificUrl] : [];
+      }
+      if (!specificUrls.includes(targetTab.url)) {
+        specificUrls.push(targetTab.url);
+        await chrome.storage.local.set({ specificUrls });
+      }
+      try {
+        await chrome.action.setBadgeText({ text: 'SET' });
+        await chrome.action.setBadgeBackgroundColor({ color: '#00F0FF' });
+        setTimeout(() => {
+          chrome.action.setBadgeText({ text: '' });
+        }, 2000);
+      } catch (e) {
+        console.error("Failed to set badge feedback:", e);
+      }
+    }
     return;
   }
   
@@ -781,6 +834,9 @@ chrome.contextMenus.onClicked.addListener(async (info) => {
       break;
     case 'reload-right':
       await performReload('right', bypassCache);
+      break;
+    case 'reload-specific':
+      await performReload('specific', bypassCache);
       break;
   }
 });

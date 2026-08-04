@@ -759,13 +759,30 @@ document.addEventListener("keydown", (e) => {
 const tabButtons = document.querySelectorAll(".tab-nav-btn");
 const tabContents = document.querySelectorAll(".tab-content");
 
+function activateTab(targetId) {
+  tabButtons.forEach((b) => b.classList.toggle("active", b.dataset.tab === targetId));
+  tabContents.forEach((c) => c.classList.toggle("hidden", c.id !== targetId));
+}
+
 tabButtons.forEach((btn) => {
   btn.addEventListener("click", () => {
     const target = btn.dataset.tab;
-    tabButtons.forEach((b) => b.classList.toggle("active", b === btn));
-    tabContents.forEach((c) => c.classList.toggle("hidden", c.id !== target));
+    activateTab(target);
+    chrome.storage.local.set({ activeTabId: target });
   });
 });
+
+async function restoreActiveTab() {
+  try {
+    const { activeTabId } = await chrome.storage.local.get("activeTabId");
+    if (activeTabId && document.getElementById(activeTabId)) {
+      activateTab(activeTabId);
+    }
+  } catch (err) {
+    console.error("Error restoring active tab:", err);
+  }
+}
+restoreActiveTab();
 
 // --- Tab Reload Feature Logic ---
 
@@ -776,15 +793,22 @@ async function initTabReload() {
   const btnReloadLeft = document.getElementById("btn-reload-left");
   const btnReloadRight = document.getElementById("btn-reload-right");
   const btnReloadOthers = document.getElementById("btn-reload-others");
+  const btnReloadSpecific = document.getElementById("btn-reload-specific");
   
   const selectedCountText = document.getElementById("selected-count");
   const domainNameText = document.getElementById("domain-name");
+  const specificLinkStatus = document.getElementById("specific-link-status");
+  const specificLinksCount = document.getElementById("specific-links-count");
+  const specificLinksChips = document.getElementById("specific-links-chips");
+  
+  const inputSpecificUrl = document.getElementById("input-specific-url");
+  const btnAddSpecificUrl = document.getElementById("btn-add-specific-url");
+  const btnUseCurrentUrl = document.getElementById("btn-use-current-url");
+  const btnManageLinks = document.getElementById("btn-manage-links");
   
   const toggleBypassCache = document.getElementById("toggle-bypass-cache");
   const selectClickBehavior = document.getElementById("select-click-behavior");
   const behaviorHint = document.getElementById("behavior-hint");
-  
-  // (Auto reload timer variables removed)
 
   // Helper to reload a single tab
   async function reloadTab(tabId, bypassCache) {
@@ -792,6 +816,76 @@ async function initTabReload() {
       await chrome.tabs.reload(tabId, { bypassCache });
     } catch (err) {
       console.error(`Error reloading tab ${tabId}:`, err);
+    }
+  }
+
+  // Get array of target URLs from storage
+  async function getSpecificUrls() {
+    let { specificUrls, specificUrl } = await chrome.storage.local.get(['specificUrls', 'specificUrl']);
+    if (!Array.isArray(specificUrls)) {
+      specificUrls = specificUrl ? [specificUrl] : [];
+      await chrome.storage.local.set({ specificUrls });
+    }
+    return specificUrls;
+  }
+
+  // Save array of target URLs
+  async function saveSpecificUrls(urls) {
+    const clean = Array.from(new Set(urls.map(u => u.trim()).filter(Boolean)));
+    await chrome.storage.local.set({ specificUrls: clean });
+    await renderLinksUI();
+  }
+
+  // Render Target Links UI & Status
+  async function renderLinksUI() {
+    const urls = await getSpecificUrls();
+    if (specificLinksCount) specificLinksCount.textContent = urls.length;
+    
+    // Render Chips
+    if (specificLinksChips) {
+      specificLinksChips.innerHTML = '';
+      urls.forEach((urlStr, index) => {
+        const chip = document.createElement('div');
+        chip.className = 'link-chip';
+        
+        const chipText = document.createElement('span');
+        chipText.className = 'link-chip-text';
+        chipText.textContent = urlStr;
+        chipText.title = urlStr;
+        
+        const removeBtn = document.createElement('button');
+        removeBtn.className = 'chip-remove';
+        removeBtn.textContent = '✕';
+        removeBtn.title = 'Remove link';
+        removeBtn.addEventListener('click', async (e) => {
+          e.stopPropagation();
+          urls.splice(index, 1);
+          await saveSpecificUrls(urls);
+        });
+
+        chip.appendChild(chipText);
+        chip.appendChild(removeBtn);
+        specificLinksChips.appendChild(chip);
+      });
+    }
+
+    // Update Status Badge on Button
+    const tabs = await chrome.tabs.query({ currentWindow: true });
+    if (specificLinkStatus) {
+      if (urls.length === 0) {
+        specificLinkStatus.textContent = 'No target links set';
+      } else {
+        const matchingOpen = urls.filter(u => {
+          const query = u.toLowerCase().trim();
+          return tabs.some(t => t.url && t.url.toLowerCase().includes(query));
+        });
+
+        if (matchingOpen.length > 0) {
+          specificLinkStatus.textContent = `Link open (${matchingOpen.length}/${urls.length})`;
+        } else {
+          specificLinkStatus.textContent = 'Target links not open';
+        }
+      }
     }
   }
 
@@ -888,9 +982,40 @@ async function initTabReload() {
         }
         break;
       }
+
+      case 'specific': {
+        const urls = await getSpecificUrls();
+        if (urls.length === 0) {
+          if (inputSpecificUrl) {
+            inputSpecificUrl.focus();
+            inputSpecificUrl.style.borderColor = '#ff4757';
+            setTimeout(() => { inputSpecificUrl.style.borderColor = ''; }, 1500);
+          }
+          return;
+        }
+        const tabs = await chrome.tabs.query({ currentWindow: true });
+        const targetTabs = tabs.filter(t => {
+          if (!t.url) return false;
+          const tabUrl = t.url.toLowerCase();
+          return urls.some(u => {
+            const query = u.toLowerCase().trim();
+            return query && tabUrl.includes(query);
+          });
+        });
+
+        if (targetTabs.length > 0) {
+          for (const tab of targetTabs) {
+            await reloadTab(tab.id, bypassCache);
+          }
+        } else {
+          if (specificLinkStatus) specificLinkStatus.textContent = '⚠️ No target links open';
+          return;
+        }
+        break;
+      }
     }
     
-    // Close the popup after action (makes the quick click experience cleaner)
+    // Close the popup after action
     window.close();
   }
 
@@ -923,8 +1048,9 @@ async function initTabReload() {
     btnReloadDomain.disabled = true;
   }
   
-  // 3. Load settings from storage
-  const settings = await chrome.storage.local.get(['bypassCache', 'clickBehavior', 'autoReloadTabs']);
+  // 3. Load settings from storage & render Target Links UI
+  const settings = await chrome.storage.local.get(['bypassCache', 'clickBehavior']);
+  await renderLinksUI();
   
   // Bypass Cache Toggle
   const isBypassCache = settings.bypassCache || false;
@@ -937,8 +1063,6 @@ async function initTabReload() {
     behaviorHint.classList.remove('hidden');
   }
 
-  // (Auto reload status logic removed)
-
   // --- Click Listeners for Reload Actions ---
   btnReloadAll.addEventListener('click', () => performReload('all', toggleBypassCache.checked));
   btnReloadSelected.addEventListener('click', () => performReload('selected', toggleBypassCache.checked));
@@ -946,6 +1070,78 @@ async function initTabReload() {
   btnReloadLeft.addEventListener('click', () => performReload('left', toggleBypassCache.checked));
   btnReloadRight.addEventListener('click', () => performReload('right', toggleBypassCache.checked));
   btnReloadOthers.addEventListener('click', () => performReload('others', toggleBypassCache.checked));
+  if (btnReloadSpecific) btnReloadSpecific.addEventListener('click', () => performReload('specific', toggleBypassCache.checked));
+
+  // --- Add Specific Link handler ---
+  const addEnteredLink = async () => {
+    if (!inputSpecificUrl) return;
+    const val = inputSpecificUrl.value.trim();
+    if (!val) return;
+    const urls = await getSpecificUrls();
+    if (!urls.includes(val)) {
+      urls.push(val);
+      await saveSpecificUrls(urls);
+    }
+    inputSpecificUrl.value = '';
+
+    if (btnAddSpecificUrl) {
+      const origContent = btnAddSpecificUrl.innerHTML;
+      btnAddSpecificUrl.style.background = 'rgba(46, 213, 115, 0.2)';
+      btnAddSpecificUrl.style.color = '#2ed573';
+      btnAddSpecificUrl.style.borderColor = '#2ed573';
+      btnAddSpecificUrl.innerHTML = '✓ Added!';
+      setTimeout(() => {
+        btnAddSpecificUrl.style.background = '';
+        btnAddSpecificUrl.style.color = '';
+        btnAddSpecificUrl.style.borderColor = '';
+        btnAddSpecificUrl.innerHTML = origContent;
+      }, 1200);
+    }
+  };
+
+  if (btnAddSpecificUrl) {
+    btnAddSpecificUrl.addEventListener('click', addEnteredLink);
+  }
+
+  if (inputSpecificUrl) {
+    inputSpecificUrl.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') addEnteredLink();
+    });
+  }
+
+  // --- + Current Tab handler ---
+  if (btnUseCurrentUrl) {
+    btnUseCurrentUrl.addEventListener('click', async () => {
+      const [currentTab] = await chrome.tabs.query({ active: true, currentWindow: true });
+      if (currentTab && currentTab.url) {
+        const urls = await getSpecificUrls();
+        if (!urls.includes(currentTab.url)) {
+          urls.push(currentTab.url);
+          await saveSpecificUrls(urls);
+        }
+        
+        // Quick visual feedback
+        const origContent = btnUseCurrentUrl.innerHTML;
+        btnUseCurrentUrl.style.background = 'rgba(46, 213, 115, 0.2)';
+        btnUseCurrentUrl.style.color = '#2ed573';
+        btnUseCurrentUrl.style.borderColor = '#2ed573';
+        btnUseCurrentUrl.innerHTML = '✓ Added!';
+        setTimeout(() => {
+          btnUseCurrentUrl.style.background = '';
+          btnUseCurrentUrl.style.color = '';
+          btnUseCurrentUrl.style.borderColor = '';
+          btnUseCurrentUrl.innerHTML = origContent;
+        }, 1200);
+      }
+    });
+  }
+
+  // --- Manage in Dashboard handler ---
+  if (btnManageLinks) {
+    btnManageLinks.addEventListener('click', () => {
+      chrome.runtime.openOptionsPage();
+    });
+  }
 
   // --- Toggle Bypass Cache ---
   toggleBypassCache.addEventListener('change', async () => {
@@ -978,4 +1174,417 @@ async function initTabReload() {
 
 // Initialise the reload feature logic
 initTabReload();
+
+// --- Link Groups Feature Logic ---
+async function initGroups() {
+  const groupForm = document.getElementById("group-form");
+  const groupNameInput = document.getElementById("group-name-input");
+  const colorSwatches = document.querySelectorAll(".color-swatch");
+  const groupCustomColor = document.getElementById("group-custom-color");
+  const colorPickerBtnWrap = document.getElementById("color-picker-btn-wrap");
+  const customColorPopover = document.getElementById("custom-color-popover");
+  const customColorTextInput = document.getElementById("custom-color-text-input");
+  const customColorPreviewDot = document.getElementById("custom-color-preview-dot");
+  const formatButtons = document.querySelectorAll(".color-format-segmented .format-btn");
+  const groupSubmitBtn = document.getElementById("group-submit-btn");
+  const groupEditBanner = document.getElementById("group-edit-banner");
+  const cancelGroupEditBtn = document.getElementById("cancel-group-edit");
+  const groupsContainer = document.getElementById("groups-container");
+  const navGroupsCount = document.getElementById("nav-groups-count");
+
+  let selectedColor = "#3b82f6";
+  let editingGroupId = null;
+  let currentFormat = "hex";
+
+  // Helper: Format hex to target format string (HEX, RGB, HSL)
+  function formatColorValue(hex, format) {
+    if (!hex || !hex.startsWith("#")) return hex;
+    const num = parseInt(hex.slice(1), 16);
+    const r = (num >> 16) & 255;
+    const g = (num >> 8) & 255;
+    const b = num & 255;
+
+    if (format === "rgb") {
+      return `rgb(${r}, ${g}, ${b})`;
+    }
+    if (format === "hsl") {
+      const rNorm = r / 255, gNorm = g / 255, bNorm = b / 255;
+      const max = Math.max(rNorm, gNorm, bNorm), min = Math.min(rNorm, gNorm, bNorm);
+      let h, s, l = (max + min) / 2;
+      if (max === min) {
+        h = s = 0;
+      } else {
+        const d = max - min;
+        s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+        switch (max) {
+          case rNorm: h = (gNorm - bNorm) / d + (gNorm < bNorm ? 6 : 0); break;
+          case gNorm: h = (bNorm - rNorm) / d + 2; break;
+          case bNorm: h = (rNorm - gNorm) / d + 4; break;
+        }
+        h /= 6;
+      }
+      return `hsl(${Math.round(h * 360)}, ${Math.round(s * 100)}%, ${Math.round(l * 100)}%)`;
+    }
+    return hex.toUpperCase();
+  }
+
+  // Helper: Parse any color input (HEX, RGB, HSL) into standard #RRGGBB hex
+  function parseColorToHex(str) {
+    if (!str) return null;
+    str = str.trim();
+    if (/^#?[0-9a-fA-F]{6}$/.test(str)) {
+      return str.startsWith('#') ? str.toLowerCase() : '#' + str.toLowerCase();
+    }
+    if (/^#?[0-9a-fA-F]{3}$/.test(str)) {
+      const raw = str.startsWith('#') ? str.slice(1) : str;
+      const hex = raw.split('').map(c => c + c).join('');
+      return '#' + hex.toLowerCase();
+    }
+    const rgbMatch = str.match(/(?:rgb\()?(\d{1,3})[\s,]+(\d{1,3})[\s,]+(\d{1,3})\)?/i);
+    if (rgbMatch) {
+      const r = Math.min(255, parseInt(rgbMatch[1], 10));
+      const g = Math.min(255, parseInt(rgbMatch[2], 10));
+      const b = Math.min(255, parseInt(rgbMatch[3], 10));
+      return "#" + [r, g, b].map(x => x.toString(16).padStart(2, "0")).join("");
+    }
+    const hslMatch = str.match(/(?:hsl\()?(\d{1,3})[\s,]+(\d{1,3})%?[\s,]+(\d{1,3})%?\)?/i);
+    if (hslMatch) {
+      const h = parseInt(hslMatch[1], 10) / 360;
+      const s = parseInt(hslMatch[2], 10) / 100;
+      const l = parseInt(hslMatch[3], 10) / 100;
+      let r, g, b;
+      if (s === 0) {
+        r = g = b = l;
+      } else {
+        const q = l < 0.5 ? l * (1 + s) : l + s - l * s;
+        const p = 2 * l - q;
+        const hue2rgb = (p, q, t) => {
+          if (t < 0) t += 1;
+          if (t > 1) t -= 1;
+          if (t < 1/6) return p + (q - p) * 6 * t;
+          if (t < 1/2) return q;
+          if (t < 2/3) return p + (q - p) * (2/3 - t) * 6;
+          return p;
+        };
+        r = hue2rgb(p, q, h + 1/3);
+        g = hue2rgb(p, q, h);
+        b = hue2rgb(p, q, h - 1/3);
+      }
+      return "#" + [Math.round(r * 255), Math.round(g * 255), Math.round(b * 255)].map(x => x.toString(16).padStart(2, "0")).join("");
+    }
+    return null;
+  }
+
+  // Update Custom Color Popover UI
+  function updateCustomColorUI(hexVal) {
+    if (!hexVal) return;
+    selectedColor = hexVal;
+    if (customColorPreviewDot) {
+      customColorPreviewDot.style.backgroundColor = selectedColor;
+      customColorPreviewDot.style.boxShadow = `0 0 10px ${selectedColor}`;
+    }
+    if (customColorTextInput) {
+      customColorTextInput.value = formatColorValue(selectedColor, currentFormat);
+    }
+    if (groupCustomColor) {
+      groupCustomColor.value = selectedColor;
+    }
+  }
+
+  // Toggle Palette Popover
+  if (colorPickerBtnWrap && customColorPopover) {
+    colorPickerBtnWrap.addEventListener("click", () => {
+      customColorPopover.classList.toggle("hidden");
+      colorSwatches.forEach((s) => s.classList.remove("active"));
+      colorPickerBtnWrap.classList.add("active");
+      updateCustomColorUI(selectedColor);
+    });
+  }
+
+  // Format segmented buttons
+  formatButtons.forEach((btn) => {
+    btn.addEventListener("click", () => {
+      formatButtons.forEach((b) => b.classList.remove("active"));
+      btn.classList.add("active");
+      currentFormat = btn.dataset.format;
+      updateCustomColorUI(selectedColor);
+    });
+  });
+
+  // Text input color handler
+  if (customColorTextInput) {
+    customColorTextInput.addEventListener("input", (e) => {
+      const parsedHex = parseColorToHex(e.target.value);
+      if (parsedHex) {
+        selectedColor = parsedHex;
+        if (customColorPreviewDot) {
+          customColorPreviewDot.style.backgroundColor = selectedColor;
+          customColorPreviewDot.style.boxShadow = `0 0 10px ${selectedColor}`;
+        }
+        if (groupCustomColor) groupCustomColor.value = selectedColor;
+      }
+    });
+  }
+
+  // Visual color wheel picker handler
+  if (groupCustomColor) {
+    groupCustomColor.addEventListener("input", (e) => {
+      const hex = e.target.value;
+      updateCustomColorUI(hex);
+    });
+  }
+
+  // Swatch click logic
+  colorSwatches.forEach((swatch) => {
+    swatch.addEventListener("click", () => {
+      colorSwatches.forEach((s) => s.classList.remove("active"));
+      if (colorPickerBtnWrap) colorPickerBtnWrap.classList.remove("active");
+      if (customColorPopover) customColorPopover.classList.add("hidden");
+      swatch.classList.add("active");
+      selectedColor = swatch.dataset.color;
+      if (groupCustomColor) groupCustomColor.value = selectedColor;
+    });
+  });
+
+  // Get groups from storage
+  async function getGroups() {
+    const { linkGroups } = await chrome.storage.local.get("linkGroups");
+    return Array.isArray(linkGroups) ? linkGroups : [];
+  }
+
+  // Save groups to storage & update UI
+  async function saveGroups(groups) {
+    await chrome.storage.local.set({ linkGroups: groups });
+    await renderGroupsUI();
+  }
+
+  // Cancel edit mode
+  function cancelEdit() {
+    editingGroupId = null;
+    if (groupForm) groupForm.reset();
+    if (groupEditBanner) groupEditBanner.classList.add("hidden");
+    if (customColorPopover) customColorPopover.classList.add("hidden");
+    if (groupSubmitBtn) groupSubmitBtn.querySelector(".btn-label").textContent = "+ Add Group";
+    selectedColor = "#3b82f6";
+    colorSwatches.forEach((s) => {
+      s.classList.toggle("active", s.dataset.color.toLowerCase() === selectedColor.toLowerCase());
+    });
+    if (colorPickerBtnWrap) colorPickerBtnWrap.classList.remove("active");
+    if (groupCustomColor) groupCustomColor.value = selectedColor;
+  }
+
+  if (cancelGroupEditBtn) {
+    cancelGroupEditBtn.addEventListener("click", cancelEdit);
+  }
+
+  // Handle Create / Edit Group
+  if (groupForm) {
+    groupForm.addEventListener("submit", async (e) => {
+      e.preventDefault();
+      const name = groupNameInput.value.trim();
+      if (!name) return;
+
+      const groups = await getGroups();
+
+      if (editingGroupId) {
+        // Edit existing group
+        const group = groups.find((g) => g.id === editingGroupId);
+        if (group) {
+          group.name = name;
+          group.color = selectedColor;
+        }
+      } else {
+        // Create new group
+        const newGroup = {
+          id: "grp_" + Date.now() + "_" + Math.random().toString(36).substr(2, 4),
+          name,
+          color: selectedColor,
+          links: [],
+          createdAt: Date.now(),
+        };
+        groups.push(newGroup);
+      }
+
+      await saveGroups(groups);
+      cancelEdit();
+    });
+  }
+
+  // Render Groups UI
+  async function renderGroupsUI() {
+    const groups = await getGroups();
+
+    // Update Badge
+    if (navGroupsCount) {
+      if (groups.length > 0) {
+        navGroupsCount.textContent = groups.length;
+        navGroupsCount.classList.remove("hidden");
+      } else {
+        navGroupsCount.classList.add("hidden");
+      }
+    }
+
+    if (!groupsContainer) return;
+    groupsContainer.innerHTML = "";
+
+    if (groups.length === 0) {
+      groupsContainer.innerHTML = `
+        <div class="empty-groups-notice">
+          📁 No groups created yet. Create a group above to organize your target links!
+        </div>
+      `;
+      return;
+    }
+
+    groups.forEach((group) => {
+      const card = document.createElement("div");
+      card.className = "group-card";
+      card.style.setProperty("--group-color", group.color || "#3b82f6");
+
+      // Header
+      const header = document.createElement("div");
+      header.className = "group-card-header";
+      header.innerHTML = `
+        <div class="group-title-wrap">
+          <div class="group-color-indicator"></div>
+          <span class="group-title" title="${escapeHtml(group.name)}">${escapeHtml(group.name)}</span>
+          <span class="group-count-badge">${group.links ? group.links.length : 0} links</span>
+        </div>
+        <div class="group-header-actions">
+          <button type="button" class="btn-open-all-group btn-open-group" title="Open links in current profile / tab">
+            <svg class="svg-icon" viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <polygon points="5 3 19 12 5 21 5 3"></polygon>
+            </svg>
+            Open All
+          </button>
+          <button type="button" class="gear-btn-modern btn-gear-group" title="Manage Group & Links">
+            <svg class="gear-icon" viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="12" cy="12" r="3"></circle>
+              <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+            </svg>
+          </button>
+        </div>
+      `;
+
+      // Add link inline box (shown directly on the group card)
+      const addBox = document.createElement("div");
+      addBox.className = "group-add-link-box";
+      addBox.innerHTML = `
+        <input type="text" class="input-group-url" placeholder="Add URL or keyword..." />
+        <button type="button" class="secondary-btn-sm btn-add-link-manual" title="Add typed link">+ Add</button>
+        <button type="button" class="secondary-btn-sm btn-add-link-current" title="Add active tab URL">+ Current Tab</button>
+      `;
+
+      const inputUrl = addBox.querySelector(".input-group-url");
+      const btnAddManual = addBox.querySelector(".btn-add-link-manual");
+      const btnAddCurrent = addBox.querySelector(".btn-add-link-current");
+
+      // Add manual link function
+      async function addLinkToGroup(urlToAdd, titleToAdd) {
+        if (!urlToAdd) return;
+        let formattedUrl = urlToAdd.trim();
+        if (!formattedUrl.startsWith("http://") && !formattedUrl.startsWith("https://") && formattedUrl.includes(".")) {
+          formattedUrl = "https://" + formattedUrl;
+        }
+
+        const curGroups = await getGroups();
+        const g = curGroups.find((x) => x.id === group.id);
+        if (g) {
+          if (!g.links) g.links = [];
+          if (!g.links.some((l) => l.url.toLowerCase() === formattedUrl.toLowerCase())) {
+            g.links.push({
+              id: "lnk_" + Date.now() + "_" + Math.random().toString(36).substr(2, 4),
+              url: formattedUrl,
+              title: titleToAdd || formattedUrl,
+            });
+            await saveGroups(curGroups);
+          }
+        }
+      }
+
+      btnAddManual.addEventListener("click", async () => {
+        const val = inputUrl.value.trim();
+        if (val) {
+          await addLinkToGroup(val, val);
+          inputUrl.value = "";
+        }
+      });
+
+      inputUrl.addEventListener("keydown", async (e) => {
+        if (e.key === "Enter") {
+          e.preventDefault();
+          const val = inputUrl.value.trim();
+          if (val) {
+            await addLinkToGroup(val, val);
+            inputUrl.value = "";
+          }
+        }
+      });
+
+      btnAddCurrent.addEventListener("click", async () => {
+        try {
+          const [currentTab] = await chrome.tabs.query({ active: true, currentWindow: true });
+          if (currentTab && currentTab.url) {
+            await addLinkToGroup(currentTab.url, currentTab.title || currentTab.url);
+            
+            // Visual feedback
+            const origText = btnAddCurrent.textContent;
+            btnAddCurrent.textContent = "✓ Added!";
+            btnAddCurrent.style.color = "#2ed573";
+            setTimeout(() => {
+              btnAddCurrent.textContent = origText;
+              btnAddCurrent.style.color = "";
+            }, 1000);
+          }
+        } catch (err) {
+          console.error("Error adding current tab:", err);
+        }
+      });
+
+      // Gear Button Handler: Redirect to Dashboard Options page to manage / edit / delete
+      header.querySelector(".btn-gear-group").addEventListener("click", () => {
+        chrome.runtime.openOptionsPage();
+      });
+
+      // Open All Button Click Handler (opens first link in current tab, rest in new tabs)
+      header.querySelector(".btn-open-group").addEventListener("click", async () => {
+        if (group.links && group.links.length > 0) {
+          try {
+            const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
+            group.links.forEach((l, index) => {
+              if (index === 0 && activeTab && activeTab.id) {
+                chrome.tabs.update(activeTab.id, { url: l.url });
+              } else {
+                chrome.tabs.create({ url: l.url });
+              }
+            });
+          } catch (err) {
+            console.error("Error opening group links:", err);
+          }
+        }
+      });
+
+      card.appendChild(header);
+      card.appendChild(addBox);
+      groupsContainer.appendChild(card);
+    });
+  }
+
+  // Initial render
+  await renderGroupsUI();
+}
+
+function escapeHtml(str) {
+  if (!str) return "";
+  return String(str)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#039;");
+}
+
+// Initialise Groups feature
+initGroups();
+
 
