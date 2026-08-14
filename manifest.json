@@ -6,7 +6,7 @@
   "permissions": ["storage", "alarms", "tabs", "scripting", "offscreen", "contextMenus"],
   "host_permissions": ["<all_urls>"],
   "content_security_policy": {
-    "extension_pages": "default-src 'self'; script-src 'self'; style-src 'self' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com; img-src 'self'; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'"
+    "extension_pages": "default-src 'self'; script-src 'self'; style-src 'self' https://fonts.googleapis.com; font-src 'self' https://fonts.gstatic.com https://frontend-cdn.perplexity.ai https://*.perplexity.ai; img-src 'self' data: https:; connect-src 'self' https: http://localhost:* http://127.0.0.1:*; object-src 'none'; base-uri 'none'; form-action 'none'"
   },
   "background": {
     "service_worker": "background.js"

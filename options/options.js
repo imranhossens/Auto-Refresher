@@ -731,7 +731,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
       if (groups.length === 0) {
         groupsListContainer.innerHTML = `
-          <div class="empty-message" style="text-align: center; padding: 20px;">
+          <div class="empty-message group-empty-box">
             📁 No link groups created yet. Create a group above to organize your URLs!
           </div>
         `;
@@ -814,7 +814,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             linksList.appendChild(item);
           });
         } else {
-          linksList.innerHTML = `<div style="font-size: 11px; color: var(--text-secondary); text-align: center; padding: 6px;">No links added to this group yet.</div>`;
+          linksList.innerHTML = `<div class="group-empty-subtext">No links added to this group yet.</div>`;
         }
 
         const addBox = document.createElement("div");
@@ -914,6 +914,184 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     renderOptionsGroupsRef = renderOptionsGroups;
     await renderOptionsGroups();
+  }
+
+  // --- Cross-Device Activity Sync Settings Logic ---
+  const toggleSyncEnabled = document.getElementById('toggle-sync-enabled');
+  const inputSyncToken = document.getElementById('input-sync-token');
+  const btnGenerateSyncToken = document.getElementById('btn-generate-sync-token');
+  const inputSyncTimeout = document.getElementById('input-sync-timeout');
+  const optionsNewSyncDomain = document.getElementById('options-new-sync-domain');
+  const optionsBtnAddSyncDomain = document.getElementById('options-btn-add-sync-domain');
+  const syncDomainsList = document.getElementById('sync-domains-list');
+  const syncEmptyState = document.getElementById('sync-empty-state');
+
+  if (toggleSyncEnabled && inputSyncTimeout && optionsNewSyncDomain && optionsBtnAddSyncDomain && syncDomainsList) {
+    // Load initial sync settings
+    chrome.storage.local.get(['syncEnabled', 'syncTimeout', 'syncDomains', 'syncToken']).then((syncSettings) => {
+      toggleSyncEnabled.checked = syncSettings.syncEnabled !== false;
+      if (inputSyncToken) inputSyncToken.value = syncSettings.syncToken || '';
+      inputSyncTimeout.value = syncSettings.syncTimeout || 5;
+      renderSyncDomains();
+    });
+
+    // Toggle Enable
+    toggleSyncEnabled.addEventListener('change', async () => {
+      await chrome.storage.local.set({ syncEnabled: toggleSyncEnabled.checked });
+    });
+
+    // Token Change
+    if (inputSyncToken) {
+      inputSyncToken.addEventListener('input', async () => {
+        // Drop the old status too, otherwise a stale error from the previous
+        // token keeps showing until the next read/write happens.
+        await chrome.storage.local.remove('syncStatus');
+        await chrome.storage.local.set({ syncToken: inputSyncToken.value.trim() });
+      });
+    }
+
+    // Token Generate Button
+    if (btnGenerateSyncToken && inputSyncToken) {
+      btnGenerateSyncToken.addEventListener('click', async () => {
+        // Don't silently destroy an endpoint URL the user pasted in.
+        if (/^https?:\/\//i.test(inputSyncToken.value.trim())) {
+          if (!confirm('Replace your custom endpoint URL with a generated kvdb.io token?')) return;
+        }
+        btnGenerateSyncToken.textContent = 'Generating...';
+        btnGenerateSyncToken.disabled = true;
+        await chrome.storage.local.remove('syncStatus');
+        try {
+          const response = await fetch('https://kvdb.io/', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: 'email=sync@autorefresh.extension'
+          });
+          const token = response.ok ? (await response.text()).trim() : '';
+          if (!token) throw new Error(`bucket creation failed (HTTP ${response.status})`);
+
+          // A bucket that can't be written to is worse than no token at all —
+          // prove it works before saving it, instead of failing silently later.
+          const probe = await fetch(`https://kvdb.io/${encodeURIComponent(token)}/__sync_probe`, {
+            method: 'POST',
+            body: 'probe',
+          });
+          if (!probe.ok) throw new Error(`bucket rejects writes (HTTP ${probe.status})`);
+
+          inputSyncToken.value = token;
+          await chrome.storage.local.set({ syncToken: token });
+        } catch (err) {
+          // Keep the token empty so the working built-in browser sync is used.
+          inputSyncToken.value = '';
+          await chrome.storage.local.set({ syncToken: '' });
+          alert(`Sync token service unavailable — ${err.message}.\n\nNo token is needed: the extension uses built-in browser sync, which works across devices signed into the same browser account.`);
+        } finally {
+          btnGenerateSyncToken.textContent = 'Generate';
+          btnGenerateSyncToken.disabled = false;
+        }
+      });
+    }
+
+    // Timeout Change
+    inputSyncTimeout.addEventListener('change', async () => {
+      const val = parseInt(inputSyncTimeout.value, 10) || 5;
+      await chrome.storage.local.set({ syncTimeout: val });
+    });
+
+    // Render domains list
+    async function renderSyncDomains() {
+      const { syncDomains = [] } = await chrome.storage.local.get('syncDomains');
+      
+      // Clear existing dynamic rows
+      const rows = syncDomainsList.querySelectorAll('tr:not(#sync-empty-state)');
+      rows.forEach(r => r.remove());
+
+      if (syncDomains.length === 0) {
+        if (syncEmptyState) syncEmptyState.classList.remove('hidden');
+        return;
+      }
+
+      if (syncEmptyState) syncEmptyState.classList.add('hidden');
+
+      syncDomains.forEach((domain, idx) => {
+        const tr = document.createElement('tr');
+
+        // Domain cell
+        const tdDomain = document.createElement('td');
+        const span = document.createElement('span');
+        span.style.fontFamily = 'monospace';
+        span.style.fontSize = '12px';
+        span.style.color = '#fff';
+        span.textContent = domain;
+        tdDomain.appendChild(span);
+
+        // Actions cell
+        const tdActions = document.createElement('td');
+        tdActions.className = 'col-actions';
+
+        const btnDelete = document.createElement('button');
+        btnDelete.className = 'btn-icon-action btn-icon-danger';
+        btnDelete.title = 'Delete sync domain';
+        btnDelete.innerHTML = `
+          <svg class="svg-icon" viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="3 6 5 6 21 6"></polyline>
+            <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+          </svg>
+        `;
+
+        btnDelete.addEventListener('click', async () => {
+          const updated = syncDomains.filter((_, i) => i !== idx);
+          await chrome.storage.local.set({ syncDomains: updated });
+          renderSyncDomains();
+        });
+
+        tdActions.appendChild(btnDelete);
+        tr.appendChild(tdDomain);
+        tr.appendChild(tdActions);
+
+        syncDomainsList.appendChild(tr);
+      });
+    }
+
+    // Add Domain Helper
+    async function addSyncDomain() {
+      const inputVal = optionsNewSyncDomain.value.trim().toLowerCase();
+      if (!inputVal) return;
+
+      // Extract domain name from URL if user pastes a full URL
+      let cleanDomain = inputVal;
+      try {
+        if (inputVal.startsWith('http://') || inputVal.startsWith('https://')) {
+          cleanDomain = new URL(inputVal).hostname;
+        } else if (inputVal.includes('/')) {
+          cleanDomain = inputVal.split('/')[0];
+        }
+      } catch (e) {
+        // Fallback
+      }
+
+      // Remove www. if present
+      if (cleanDomain.startsWith('www.')) {
+        cleanDomain = cleanDomain.substring(4);
+      }
+
+      if (cleanDomain) {
+        const { syncDomains = [] } = await chrome.storage.local.get('syncDomains');
+        if (!syncDomains.includes(cleanDomain)) {
+          syncDomains.push(cleanDomain);
+          await chrome.storage.local.set({ syncDomains });
+          optionsNewSyncDomain.value = '';
+          renderSyncDomains();
+        }
+      }
+    }
+
+    optionsBtnAddSyncDomain.addEventListener('click', addSyncDomain);
+    optionsNewSyncDomain.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        addSyncDomain();
+      }
+    });
   }
 
   function escapeHtml(str) {

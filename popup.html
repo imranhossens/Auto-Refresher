@@ -124,6 +124,50 @@
       </div>
 
       <ul id="job-list"></ul>
+
+      <!-- Cross-Device Sync Settings Section inside Auto Refresh Tab -->
+      <div class="card sync-section">
+        <h3 id="popup-sync-header" class="sync-header">
+          <span class="sync-header-title">
+            <svg class="chevron-icon" id="popup-sync-chevron" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+              <polyline points="6 9 12 15 18 9"></polyline>
+            </svg>
+            Cross-Device Sync
+          </span>
+          <label class="switch">
+            <input type="checkbox" id="popup-toggle-sync-enabled">
+            <span class="switch-track"></span>
+          </label>
+        </h3>
+        
+        <div id="popup-sync-details" class="sync-details hidden">
+          <div class="sync-field-group">
+            <label>Sync Token or Endpoint URL</label>
+            <div class="sync-field-row">
+              <input type="text" id="popup-input-sync-token" placeholder="Empty = same-browser sync · or paste https://…" />
+              <button id="popup-btn-generate-sync-token" type="button" class="primary-btn">Generate</button>
+            </div>
+            <div class="sync-hint">Paste the same endpoint URL on every browser you want linked.</div>
+          </div>
+
+          <div class="sync-timeout-row">
+            <label>Idle Timeout (mins)</label>
+            <input type="number" id="popup-input-sync-timeout" min="1" max="60" value="5" />
+          </div>
+
+          <div class="sync-domains-container">
+            <label>Tracked Domains</label>
+            <div class="sync-field-row">
+              <input type="text" id="popup-new-sync-domain" placeholder="e.g., fiverr.com" />
+              <button id="popup-btn-add-sync-domain" type="button" class="primary-btn">Add</button>
+            </div>
+            <ul id="popup-sync-domains-list" class="sync-domains-list"></ul>
+          </div>
+
+          <div id="popup-sync-status" class="sync-status">Sync status: waiting for first check…</div>
+        </div>
+      </div>
+      </div>
     </div>
 
     <!-- Tab 2: Tab Reload Section -->
@@ -305,18 +349,18 @@
           <div class="color-picker-row">
             <div class="color-swatches" id="color-swatches">
               <!-- Common Classic Colors -->
-              <button type="button" class="color-swatch active" data-color="#3b82f6" style="background-color: #3b82f6 !important;" title="Classic Blue"></button>
-              <button type="button" class="color-swatch" data-color="#10b981" style="background-color: #10b981 !important;" title="Emerald Green"></button>
-              <button type="button" class="color-swatch" data-color="#f59e0b" style="background-color: #f59e0b !important;" title="Amber Gold"></button>
-              <button type="button" class="color-swatch" data-color="#ef4444" style="background-color: #ef4444 !important;" title="Crimson Red"></button>
-              <button type="button" class="color-swatch" data-color="#8b5cf6" style="background-color: #8b5cf6 !important;" title="Royal Purple"></button>
+              <button type="button" class="color-swatch active" data-color="#3b82f6" title="Classic Blue"></button>
+              <button type="button" class="color-swatch" data-color="#10b981" title="Emerald Green"></button>
+              <button type="button" class="color-swatch" data-color="#f59e0b" title="Amber Gold"></button>
+              <button type="button" class="color-swatch" data-color="#ef4444" title="Crimson Red"></button>
+              <button type="button" class="color-swatch" data-color="#8b5cf6" title="Royal Purple"></button>
 
               <!-- Sophisticated Modern Colors -->
-              <button type="button" class="color-swatch" data-color="#00F0FF" style="background-color: #00F0FF !important;" title="Electric Cyan"></button>
-              <button type="button" class="color-swatch" data-color="#ff007f" style="background-color: #ff007f !important;" title="Hot Pink"></button>
-              <button type="button" class="color-swatch" data-color="#ff6b4a" style="background-color: #ff6b4a !important;" title="Sunset Coral"></button>
-              <button type="button" class="color-swatch" data-color="#06b6d4" style="background-color: #06b6d4 !important;" title="Teal Aqua"></button>
-              <button type="button" class="color-swatch" data-color="#eab308" style="background-color: #eab308 !important;" title="Bright Gold"></button>
+              <button type="button" class="color-swatch" data-color="#00F0FF" title="Electric Cyan"></button>
+              <button type="button" class="color-swatch" data-color="#ff007f" title="Hot Pink"></button>
+              <button type="button" class="color-swatch" data-color="#ff6b4a" title="Sunset Coral"></button>
+              <button type="button" class="color-swatch" data-color="#06b6d4" title="Teal Aqua"></button>
+              <button type="button" class="color-swatch" data-color="#eab308" title="Bright Gold"></button>
             </div>
 
             <!-- Custom Color Picker Icon Button -->
@@ -342,7 +386,7 @@
               </div>
             </div>
             <div class="popover-body">
-              <div class="color-preview-badge" id="custom-color-preview-dot" style="background-color: #3b82f6;"></div>
+              <div class="color-preview-badge" id="custom-color-preview-dot"></div>
               <input type="text" id="custom-color-text-input" value="#3B82F6" placeholder="#HEX code..." />
               <label class="wheel-picker-trigger" title="Visual color wheel picker">
                 <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">

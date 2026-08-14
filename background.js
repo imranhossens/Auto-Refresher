@@ -19,6 +19,136 @@ function isSafeUrl(u) {
   }
 }
 
+// A stable per-browser-profile id, so a device can tell its own recorded
+// activity apart from another device's — the whole feature is "pause because
+// someone is using this site elsewhere", which is meaningless without it.
+async function getDeviceId() {
+  const { syncDeviceId } = await chrome.storage.local.get('syncDeviceId');
+  if (syncDeviceId) return syncDeviceId;
+  const id = crypto.randomUUID();
+  await chrome.storage.local.set({ syncDeviceId: id });
+  return id;
+}
+
+// Stored activity value is `deviceId|timestamp`. Values without the separator
+// come from an older version, where the writer was unknown.
+function parseActivityValue(raw) {
+  if (raw === null || raw === undefined) return null;
+  const text = String(raw).trim();
+  if (!text) return null;
+  const sep = text.lastIndexOf('|');
+  const deviceId = sep === -1 ? null : text.slice(0, sep);
+  const timestamp = parseInt(sep === -1 ? text : text.slice(sep + 1), 10);
+  if (!Number.isFinite(timestamp)) return null;
+  return { deviceId, timestamp };
+}
+
+function matchSyncDomain(hostname, syncDomains) {
+  return syncDomains.find((d) => {
+    const cleanD = String(d).trim().toLowerCase();
+    return cleanD && (hostname === cleanD || hostname.endsWith('.' + cleanD));
+  });
+}
+
+// Surfaced in the popup so a silently failing network write/read is visible
+// instead of just looking like "sync does nothing".
+async function setSyncStatus(status) {
+  await chrome.storage.local.set({ syncStatus: { ...status, at: Date.now() } });
+}
+
+// The sync token field accepts either a full https:// endpoint (any backend
+// speaking the contract below) or a bare kvdb.io bucket id. Keeping it one
+// field means switching backends is a paste, not a code change.
+//
+// Contract: GET <base>/<domain> returns the stored string (404/empty = none),
+// POST <base>/<domain> with the string as body stores it.
+function buildSyncUrl(syncToken, domain) {
+  const token = String(syncToken).trim();
+  if (/^https?:\/\//i.test(token)) {
+    const base = token.replace(/\/+$/, '');
+    const url = new URL(`${base}/${encodeURIComponent(domain)}`);
+    if (url.protocol !== 'https:' && url.protocol !== 'http:') return null;
+    return url.toString();
+  }
+  return `https://kvdb.io/${encodeURIComponent(token)}/${encodeURIComponent(domain)}`;
+}
+
+// Helper to check if cross-device activity should block refreshing for a URL/hostname
+async function isCrossDeviceActive(url) {
+  try {
+    const { syncEnabled = true, syncTimeout = 5, syncDomains = [], syncToken } = await chrome.storage.local.get([
+      'syncEnabled',
+      'syncTimeout',
+      'syncDomains',
+      'syncToken'
+    ]);
+    if (!syncEnabled || syncDomains.length === 0) return false;
+    if (!isSafeUrl(url)) return false;
+
+    const hostname = new URL(url).hostname.toLowerCase();
+    const matchedDomain = matchSyncDomain(hostname, syncDomains);
+    if (!matchedDomain) return false;
+
+    let activity = null;
+    let transport = 'browser-sync';
+    let networkError = null;
+
+    if (syncToken) {
+      // Network-based sync (works across different browsers, e.g. Comet <-> Chrome)
+      try {
+        const res = await fetch(buildSyncUrl(syncToken, matchedDomain));
+        if (res.ok) {
+          activity = parseActivityValue(await res.text());
+          transport = 'network';
+        } else if (res.status === 404) {
+          activity = null; // Nothing recorded for this domain yet.
+          transport = 'network';
+        } else {
+          networkError = `HTTP ${res.status}`;
+        }
+      } catch (err) {
+        networkError = err.message;
+      }
+    }
+
+    if (transport !== 'network') {
+      // Built-in browser sync: the default, and the fallback whenever the
+      // token backend is unreachable or rejects us.
+      const storageKey = `cross_device_active_${matchedDomain}`;
+      const syncData = await chrome.storage.sync.get(storageKey);
+      activity = parseActivityValue(syncData[storageKey]);
+    }
+
+    const base = { ok: true, domain: matchedDomain, transport, networkError };
+
+    if (!activity) {
+      await setSyncStatus({ ...base, remoteActive: false, reason: 'no-activity' });
+      return false;
+    }
+
+    // Our own activity must not pause our own refreshing.
+    const deviceId = await getDeviceId();
+    if (activity.deviceId === deviceId) {
+      await setSyncStatus({ ...base, remoteActive: false, reason: 'own-device' });
+      return false;
+    }
+
+    const elapsedMs = Date.now() - activity.timestamp;
+    const timeoutMs = syncTimeout * 60 * 1000;
+    const remoteActive = elapsedMs >= 0 && elapsedMs < timeoutMs;
+    await setSyncStatus({
+      ...base,
+      remoteActive,
+      lastActive: activity.timestamp,
+      reason: remoteActive ? 'remote-active' : 'remote-idle',
+    });
+    return remoteActive;
+  } catch (e) {
+    await setSyncStatus({ ok: false, error: `Sync check failed: ${e.message}` });
+  }
+  return false;
+}
+
 function totalSeconds(min, sec) {
   return (Number(min) || 0) * 60 + (Number(sec) || 0);
 }
@@ -234,6 +364,21 @@ async function injectHumanCheckWatcher(job) {
   }
 }
 
+// Flags a tab so the content script on the *next* load knows the reload came
+// from us, not from the user. sessionStorage survives the reload and is scoped
+// to that tab+origin. Without this, our own auto-refresh would register as
+// "user active here", and the job would block its own next refresh.
+async function markSelfReload(tabId) {
+  try {
+    await chrome.scripting.executeScript({
+      target: { tabId },
+      func: () => sessionStorage.setItem("__autoRefreshSelfReload", "1"),
+    });
+  } catch (e) {
+    // Not scriptable; the reload just counts as user activity.
+  }
+}
+
 async function refreshTab(job) {
   const rawUrls = job.urls || (job.url ? [job.url] : []);
   const urls = rawUrls.filter(isSafeUrl);
@@ -251,6 +396,7 @@ async function refreshTab(job) {
       }
       for (const tab of tabs) {
         if (tab.id === undefined) continue;
+        await markSelfReload(tab.id);
         await chrome.tabs.reload(tab.id);
         anyMatched = true;
 
@@ -374,21 +520,67 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
   if (msg.type === 'getAutoReloadConfig') {
     const tabId = sender.tab?.id;
+    const tabUrl = sender.tab?.url;
     if (!tabId) {
       sendResponse({ enabled: false });
       return;
     }
     
-    chrome.storage.local.get('autoReloadTabs').then((result) => {
+    (async () => {
+      const result = await chrome.storage.local.get('autoReloadTabs');
       const autoReloadTabs = result.autoReloadTabs || {};
       const config = autoReloadTabs[tabId];
       if (config && config.enabled) {
-        sendResponse({ enabled: true, interval: config.interval });
+        if (tabUrl && await isCrossDeviceActive(tabUrl)) {
+          sendResponse({ enabled: true, interval: 30, delayOnly: true });
+        } else {
+          sendResponse({ enabled: true, interval: config.interval });
+        }
       } else {
         sendResponse({ enabled: false });
       }
-    });
+    })();
     return true; // Keep message channel open for async response
+  }
+
+  if (msg.type === 'recordSyncActivity') {
+    (async () => {
+      try {
+        const { syncToken, syncDomains = [] } = await chrome.storage.local.get(['syncToken', 'syncDomains']);
+        // Never write a domain the user hasn't configured — msg.domain comes
+        // from a content script and ends up in the request path.
+        const domain = matchSyncDomain(String(msg.domain || '').toLowerCase(), syncDomains);
+        if (!domain) return;
+
+        const value = `${await getDeviceId()}|${Date.now()}`;
+        let networkError = null;
+
+        if (syncToken) {
+          try {
+            const res = await fetch(buildSyncUrl(syncToken, domain), {
+              method: 'POST',
+              body: value,
+            });
+            if (res.ok) {
+              await setSyncStatus({ ok: true, domain, wrote: true, transport: 'network' });
+              return;
+            }
+            networkError = `HTTP ${res.status}`;
+          } catch (err) {
+            networkError = err.message;
+          }
+        }
+
+        // No token, or the token backend rejected us — use built-in browser
+        // sync so activity still reaches this account's other devices.
+        const storageKey = `cross_device_active_${domain}`;
+        await chrome.storage.sync.set({ [storageKey]: value });
+        await setSyncStatus({ ok: true, domain, wrote: true, transport: 'browser-sync', networkError });
+      } catch (err) {
+        await setSyncStatus({ ok: false, error: `Write failed: ${err.message}` });
+      }
+    })();
+    return true;
   }
   
   if (msg.type === 'settingsChanged') {
@@ -494,6 +686,23 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
   const jobs = await getJobs();
   const job = jobs.find((j) => j.id === alarm.name);
   if (!job || !job.enabled) return;
+
+  // CHECK CROSS-DEVICE ACTIVE SYNC
+  const rawUrls = job.urls || (job.url ? [job.url] : []);
+  const urls = rawUrls.filter(isSafeUrl);
+  let syncBlocked = false;
+  for (const url of urls) {
+    if (await isCrossDeviceActive(url)) {
+      syncBlocked = true;
+      break;
+    }
+  }
+
+  if (syncBlocked) {
+    // Postpone reload: schedule next check in 30 seconds
+    chrome.alarms.create(job.id, { when: Date.now() + 30000 });
+    return;
+  }
 
   const errors = await getJobErrors();
   if (errors[job.id]) {
