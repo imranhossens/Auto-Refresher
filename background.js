@@ -1074,3 +1074,121 @@ chrome.commands.onCommand.addListener(async (command) => {
       break;
   }
 });
+
+// ---- Cross-device settings sync ----
+// Mirrors the user's actual input (jobs, link groups, specific URLs, prefs,
+// toggles) from chrome.storage.local into chrome.storage.sync, so signing
+// into the same Google/Chrome account on another device (even a fresh
+// unpacked/dev-mode install) restores everything automatically. Excluded:
+// per-device runtime state (syncDeviceId, syncStatus, jobErrors, activeTabId,
+// autoReloadTabs), which is meaningless off the device that produced it.
+//
+// chrome.storage.sync caps each item at 8KB, so values are split into
+// chunks under `${key}__c0`, `${key}__c1`, ... with a `${key}__meta` item
+// holding {v: version, n: chunkCount}. `version` is a local write timestamp
+// used for last-write-wins, and to tell a value we just pulled down from a
+// value the user just typed (otherwise pull and push would loop forever).
+const SYNC_MIRROR_KEYS = [
+  'jobs',
+  'specificUrls',
+  'linkGroups',
+  'formPrefs',
+  'bypassCache',
+  'clickBehavior',
+  'syncEnabled',
+  'syncDomains',
+  'syncToken',
+  'syncTimeout',
+];
+const SYNC_VERSIONS_KEY = '__syncVersions'; // local-only: { [key]: lastSyncedVersion }
+const SYNC_CHUNK_BYTES = 6000;
+const syncApplying = new Set(); // keys currently being written to local as part of a pull
+
+function chunkString(str, size) {
+  const chunks = [];
+  for (let i = 0; i < str.length; i += size) chunks.push(str.slice(i, i + size));
+  return chunks.length ? chunks : [''];
+}
+
+async function pushKeyToSync(key, version) {
+  try {
+    const { [key]: value } = await chrome.storage.local.get(key);
+    const json = JSON.stringify(value === undefined ? null : value);
+    const chunks = chunkString(json, SYNC_CHUNK_BYTES);
+    const oldMeta = (await chrome.storage.sync.get(`${key}__meta`))[`${key}__meta`];
+    const payload = { [`${key}__meta`]: { v: version, n: chunks.length } };
+    chunks.forEach((c, i) => { payload[`${key}__c${i}`] = c; });
+    await chrome.storage.sync.set(payload);
+    if (oldMeta && oldMeta.n > chunks.length) {
+      const stale = [];
+      for (let i = chunks.length; i < oldMeta.n; i++) stale.push(`${key}__c${i}`);
+      await chrome.storage.sync.remove(stale);
+    }
+  } catch (e) {
+    console.warn('[sync] push failed for', key, e);
+  }
+}
+
+async function pullKeyFromSync(key) {
+  const { [`${key}__meta`]: meta } = await chrome.storage.sync.get(`${key}__meta`);
+  if (!meta) return null;
+  const chunkKeys = Array.from({ length: meta.n }, (_, i) => `${key}__c${i}`);
+  const chunkRes = chunkKeys.length ? await chrome.storage.sync.get(chunkKeys) : {};
+  const json = chunkKeys.map((k) => chunkRes[k] || '').join('');
+  try {
+    return { v: meta.v, value: JSON.parse(json) };
+  } catch {
+    return null;
+  }
+}
+
+async function getSyncVersions() {
+  const { [SYNC_VERSIONS_KEY]: v } = await chrome.storage.local.get(SYNC_VERSIONS_KEY);
+  return v || {};
+}
+
+async function handleLocalMirrorChange(key) {
+  if (syncApplying.has(key)) return; // our own pull-triggered write, don't echo back
+  const version = Date.now();
+  const versions = await getSyncVersions();
+  versions[key] = version;
+  await chrome.storage.local.set({ [SYNC_VERSIONS_KEY]: versions });
+  await pushKeyToSync(key, version);
+}
+
+async function reconcileKeyFromSync(key) {
+  const remote = await pullKeyFromSync(key);
+  if (!remote) return;
+  const versions = await getSyncVersions();
+  if ((versions[key] || 0) >= remote.v) return; // local already current or newer
+  syncApplying.add(key);
+  try {
+    await chrome.storage.local.set({ [key]: remote.value });
+    versions[key] = remote.v;
+    await chrome.storage.local.set({ [SYNC_VERSIONS_KEY]: versions });
+  } finally {
+    syncApplying.delete(key);
+  }
+}
+
+async function reconcileAllFromSync() {
+  for (const key of SYNC_MIRROR_KEYS) {
+    await reconcileKeyFromSync(key);
+  }
+}
+
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area === 'local') {
+    for (const key of SYNC_MIRROR_KEYS) {
+      if (key in changes) handleLocalMirrorChange(key);
+    }
+  } else if (area === 'sync') {
+    for (const key of SYNC_MIRROR_KEYS) {
+      if (`${key}__meta` in changes) reconcileKeyFromSync(key);
+    }
+  }
+});
+
+chrome.runtime.onStartup.addListener(reconcileAllFromSync);
+chrome.runtime.onInstalled.addListener(reconcileAllFromSync);
+reconcileAllFromSync();

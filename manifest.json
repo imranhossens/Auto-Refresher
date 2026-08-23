@@ -2,6 +2,7 @@
   "manifest_version": 3,
   "name": "Auto Refresh & Tab Reload",
   "version": "1.0.0",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAytx7sXVzCEUhX07fLaWZR9+kb95vKaTUx436R/vuy6dp31TEHYHzsG0tQh2rHgUSb3jYI4ku6Aetuzk2ekCnEWq2Kv1S5gSuz5qOOzfipgSJ1NZ+W9du28OMLSJVFCj1qDKWs7ksJVFL3xdoYX8ACaXmg0jj937gyJvZwvMsnCeM4WuOC8yAaUz7XghWwJLFrkehgaBpR4oEO0eN2Bk1UL0xTqecVLHijgyaKEx+eYcWxAbdpFLooftnpU9qdAcH5KiX6amEB6KJNxmR5u/ZIG4JapwCLj6/RhUHf/DiQfS5brCa1aKycPSCyzpxH14lYiEtRlrM6AxPOTnz7IMoqwIDAQAB",
   "description": "Auto-refresh specific tabs on custom intervals, specific times, or random ranges. Quickly reload tabs, domains, selected, or left/right tabs.",
   "permissions": ["storage", "alarms", "tabs", "scripting", "offscreen", "contextMenus"],
   "host_permissions": ["<all_urls>"],
