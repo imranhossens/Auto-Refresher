@@ -1403,7 +1403,10 @@ async function initTabReload() {
 
   // --- Manage in Dashboard handler ---
   if (btnManageLinks) {
-    btnManageLinks.addEventListener('click', () => {
+    btnManageLinks.addEventListener('click', async () => {
+      try {
+        await chrome.storage.local.set({ highlightSection: 'target-links' });
+      } catch (e) {}
       chrome.runtime.openOptionsPage();
     });
   }
@@ -1611,6 +1614,8 @@ async function initGroups() {
     });
   });
 
+  let expandedGroupIds = new Set();
+
   // Get groups from storage
   async function getGroups() {
     const { linkGroups } = await chrome.storage.local.get("linkGroups");
@@ -1713,7 +1718,7 @@ async function initGroups() {
         <div class="group-title-wrap">
           <div class="group-color-indicator"></div>
           <span class="group-title" title="${escapeHtml(group.name)}">${escapeHtml(group.name)}</span>
-          <span class="group-count-badge">${group.links ? group.links.length : 0} links</span>
+          <span class="group-count-badge" style="cursor: pointer;" title="Click to toggle links">${group.links ? group.links.length : 0} links</span>
         </div>
         <div class="group-header-actions">
           <button type="button" class="btn-open-all-group btn-open-group" title="Open links in current profile / tab">
@@ -1726,6 +1731,11 @@ async function initGroups() {
             <svg class="gear-icon" viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
               <circle cx="12" cy="12" r="3"></circle>
               <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+            </svg>
+          </button>
+          <button type="button" class="btn-expand-group" title="Expand or collapse links">
+            <svg class="chevron-icon" viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <polyline points="6 9 12 15 18 9"></polyline>
             </svg>
           </button>
         </div>
@@ -1756,7 +1766,8 @@ async function initGroups() {
         const g = curGroups.find((x) => x.id === group.id);
         if (g) {
           if (!g.links) g.links = [];
-          if (!g.links.some((l) => l.url.toLowerCase() === formattedUrl.toLowerCase())) {
+          if (!g.links.some((l) => (typeof l === 'object' ? l.url : l).toLowerCase() === formattedUrl.toLowerCase())) {
+            expandedGroupIds.add(group.id);
             g.links.push({
               id: "lnk_" + Date.now() + "_" + Math.random().toString(36).substr(2, 4),
               url: formattedUrl,
@@ -1807,7 +1818,12 @@ async function initGroups() {
       });
 
       // Gear Button Handler: Redirect to Dashboard Options page to manage / edit / delete
-      header.querySelector(".btn-gear-group").addEventListener("click", () => {
+      header.querySelector(".btn-gear-group").addEventListener("click", async () => {
+        try {
+          await chrome.storage.local.set({ highlightGroupId: group.id });
+        } catch (e) {
+          console.warn("Could not save highlightGroupId:", e);
+        }
         chrome.runtime.openOptionsPage();
       });
 
@@ -1829,8 +1845,180 @@ async function initGroups() {
         }
       });
 
+      // Expand / Collapse Chevron Icon Button
+      const toggleBtn = header.querySelector(".btn-expand-group");
+      const countBadge = header.querySelector(".group-count-badge");
+
+      // Collapsible card body holding both links list and add-link box (COLLAPSED BY DEFAULT)
+      const cardBody = document.createElement("div");
+      cardBody.className = "group-card-body hidden";
+
+      const linksContainer = document.createElement("div");
+      linksContainer.className = "group-links-list";
+
+      const isInitiallyExpanded = expandedGroupIds.has(group.id);
+      if (isInitiallyExpanded) {
+        toggleBtn.classList.add("expanded");
+        cardBody.classList.remove("hidden");
+      }
+
+      const toggleExpansion = (e) => {
+        if (e) e.stopPropagation();
+        const isExp = toggleBtn.classList.toggle("expanded");
+        cardBody.classList.toggle("hidden", !isExp);
+        if (isExp) {
+          expandedGroupIds.add(group.id);
+        } else {
+          expandedGroupIds.delete(group.id);
+        }
+      };
+
+      toggleBtn.addEventListener("click", toggleExpansion);
+      if (countBadge) {
+        countBadge.addEventListener("click", toggleExpansion);
+      }
+
+      const linksList = Array.isArray(group.links) ? group.links : [];
+      if (linksList.length > 0) {
+        linksList.forEach((rawLink) => {
+          const link = typeof rawLink === "string" ? {
+            id: "lnk_" + Math.random().toString(36).substr(2, 6),
+            url: rawLink,
+            title: rawLink
+          } : {
+            id: rawLink.id || ("lnk_" + Math.random().toString(36).substr(2, 6)),
+            url: rawLink.url || "",
+            title: rawLink.title || rawLink.url || ""
+          };
+
+          const item = document.createElement("div");
+          item.className = "group-link-item";
+
+          let faviconUrl = "";
+          try {
+            const domain = new URL(link.url).hostname;
+            faviconUrl = `https://www.google.com/s2/favicons?domain=${domain}&sz=32`;
+          } catch (e) {
+            faviconUrl = "icons/icon16.png";
+          }
+
+          const renderNormalView = () => {
+            item.innerHTML = `
+              <div class="group-link-info">
+                <img class="group-link-favicon" src="${faviconUrl}" onerror="this.src='icons/icon16.png'" />
+                <a href="${escapeHtml(link.url)}" target="_blank" class="group-link-anchor" title="${escapeHtml(link.url)}">${escapeHtml(link.title || link.url)}</a>
+              </div>
+              <div class="group-link-actions" style="display: flex; gap: 4px; align-items: center; flex-shrink: 0;">
+                <button type="button" class="icon-action-btn btn-edit-group-link" title="Edit link" style="width: 22px; height: 22px; padding: 0;">
+                  <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path>
+                    <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path>
+                  </svg>
+                </button>
+                <button type="button" class="icon-action-btn danger btn-delete-group-link" title="Delete link" style="width: 22px; height: 22px; padding: 0;">
+                  <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <polyline points="3 6 5 6 21 6"></polyline>
+                    <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+                  </svg>
+                </button>
+              </div>
+            `;
+
+            item.querySelector(".btn-edit-group-link").addEventListener("click", (e) => {
+              e.stopPropagation();
+              renderEditView();
+            });
+
+            item.querySelector(".btn-delete-group-link").addEventListener("click", async (e) => {
+              e.stopPropagation();
+              expandedGroupIds.add(group.id);
+              const curGroups = await getGroups();
+              const g = curGroups.find((x) => x.id === group.id);
+              if (g && Array.isArray(g.links)) {
+                g.links = g.links.filter((l) => (typeof l === "object" && l.id ? l.id !== link.id : (l.url || l) !== link.url));
+                await saveGroups(curGroups);
+              }
+            });
+          };
+
+          const renderEditView = () => {
+            item.innerHTML = `
+              <div style="display: flex; gap: 4px; flex: 1; min-width: 0;">
+                <input type="text" class="input-edit-url" value="${escapeHtml(link.url)}" placeholder="https://..." style="flex: 1; font-size: 11px; padding: 3px 6px; background: rgba(0,0,0,0.4); border: 1px solid var(--border-color); border-radius: 4px; color: #fff; min-width: 0;" />
+              </div>
+              <div style="display: flex; gap: 4px; align-items: center; flex-shrink: 0;">
+                <button type="button" class="icon-action-btn primary btn-save-edit" title="Save" style="width: 22px; height: 22px; padding: 0; color: #2ed573;">
+                  <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                    <polyline points="20 6 9 17 4 12"></polyline>
+                  </svg>
+                </button>
+                <button type="button" class="icon-action-btn btn-cancel-edit" title="Cancel" style="width: 22px; height: 22px; padding: 0;">
+                  <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                    <line x1="18" y1="6" x2="6" y2="18"></line>
+                    <line x1="6" y1="6" x2="18" y2="18"></line>
+                  </svg>
+                </button>
+              </div>
+            `;
+
+            const inputEdit = item.querySelector(".input-edit-url");
+            const btnSave = item.querySelector(".btn-save-edit");
+            const btnCancel = item.querySelector(".btn-cancel-edit");
+
+            inputEdit.focus();
+            inputEdit.select();
+
+            const doSave = async () => {
+              const val = inputEdit.value.trim();
+              if (!val) return;
+              let formatted = val;
+              if (!formatted.startsWith("http://") && !formatted.startsWith("https://") && formatted.includes(".")) {
+                formatted = "https://" + formatted;
+              }
+              expandedGroupIds.add(group.id);
+              const curGroups = await getGroups();
+              const g = curGroups.find((x) => x.id === group.id);
+              if (g && Array.isArray(g.links)) {
+                const targetL = g.links.find((l) => (typeof l === "object" && l.id ? l.id === link.id : (l.url || l) === link.url));
+                if (targetL) {
+                  if (typeof targetL === "string") {
+                    const idx = g.links.indexOf(targetL);
+                    g.links[idx] = { id: link.id, url: formatted, title: formatted };
+                  } else {
+                    targetL.url = formatted;
+                    targetL.title = formatted;
+                  }
+                  await saveGroups(curGroups);
+                }
+              }
+            };
+
+            btnSave.addEventListener("click", doSave);
+            btnCancel.addEventListener("click", renderNormalView);
+
+            inputEdit.addEventListener("keydown", (e) => {
+              if (e.key === "Enter") {
+                e.preventDefault();
+                doSave();
+              } else if (e.key === "Escape") {
+                e.preventDefault();
+                renderNormalView();
+              }
+            });
+          };
+
+          renderNormalView();
+          linksContainer.appendChild(item);
+        });
+      } else {
+        linksContainer.innerHTML = `<div class="empty-group-links-subtext" style="font-size: 11px; color: var(--text-secondary); padding: 8px 4px; text-align: center;">No links in this workspace yet. Add a link below!</div>`;
+      }
+
+      cardBody.appendChild(linksContainer);
+      cardBody.appendChild(addBox);
+
       card.appendChild(header);
-      card.appendChild(addBox);
+      card.appendChild(cardBody);
       groupsContainer.appendChild(card);
     });
   }

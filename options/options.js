@@ -209,8 +209,8 @@ document.addEventListener('DOMContentLoaded', async () => {
   const btnToggleSeeMore = document.getElementById('btn-toggle-see-more');
   const seeMoreText = document.getElementById('see-more-text');
 
-  const DEFAULT_VISIBLE_COUNT = 2;
-  let isTargetLinksExpanded = false;
+  const DEFAULT_VISIBLE_COUNT = 20;
+  let isTargetLinksExpanded = true;
 
   if (btnToggleSeeMore) {
     btnToggleSeeMore.addEventListener('click', () => {
@@ -450,6 +450,19 @@ document.addEventListener('DOMContentLoaded', async () => {
   await renderShortcuts();
   await renderTargetLinks();
   await initOptionsGroups();
+
+  try {
+    const { highlightSection } = await chrome.storage.local.get("highlightSection");
+    if (highlightSection === 'target-links') {
+      await chrome.storage.local.remove("highlightSection");
+      const targetCard = document.querySelector(".links-card");
+      if (targetCard) {
+        targetCard.scrollIntoView({ behavior: "smooth", block: "center" });
+        targetCard.classList.add("highlight-card");
+        setTimeout(() => targetCard.classList.remove("highlight-card"), 2500);
+      }
+    }
+  } catch (e) {}
   
   let renderOptionsGroupsRef = null;
 
@@ -729,6 +742,19 @@ document.addEventListener('DOMContentLoaded', async () => {
       const groups = await getGroups();
       groupsListContainer.innerHTML = "";
 
+      // Update total stats badge in the section header
+      const statsBadge = document.getElementById("options-groups-stats-badge");
+      if (statsBadge) {
+        const totalGroups = groups.length;
+        const totalLinks = groups.reduce((acc, g) => acc + (Array.isArray(g.links) ? g.links.length : 0), 0);
+        if (totalGroups > 0) {
+          statsBadge.textContent = `${totalGroups} ${totalGroups === 1 ? 'group' : 'groups'} · ${totalLinks} ${totalLinks === 1 ? 'link' : 'links'}`;
+          statsBadge.classList.remove("hidden");
+        } else {
+          statsBadge.classList.add("hidden");
+        }
+      }
+
       if (groups.length === 0) {
         groupsListContainer.innerHTML = `
           <div class="empty-message group-empty-box">
@@ -741,19 +767,23 @@ document.addEventListener('DOMContentLoaded', async () => {
       groups.forEach((group) => {
         const card = document.createElement("div");
         card.className = "options-group-card";
+        card.id = `options-group-${group.id}`;
         card.style.setProperty("--group-color", group.color || "#3b82f6");
+
+        const linksList = Array.isArray(group.links) ? group.links : [];
+        const linksCount = linksList.length;
 
         const header = document.createElement("div");
         header.className = "options-group-header";
         header.innerHTML = `
           <div class="options-group-title-wrap">
             <div class="options-group-color-dot"></div>
-            <span class="options-group-title">${escapeHtml(group.name)}</span>
-            <span class="options-group-badge">${group.links ? group.links.length : 0} links</span>
+            <span class="options-group-title" title="${escapeHtml(group.name)}">${escapeHtml(group.name)}</span>
+            <span class="options-group-badge">${linksCount} ${linksCount === 1 ? 'link' : 'links'}</span>
           </div>
           <div class="options-group-actions">
-            <button type="button" class="btn-see-all-group" title="See all links in group">
-              <span>See All</span>
+            <button type="button" class="btn-see-all-group expanded" title="Toggle links visibility">
+              <span>Hide Links</span>
               <svg class="chevron-icon" viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                 <polyline points="6 9 12 15 18 9"></polyline>
               </svg>
@@ -774,15 +804,26 @@ document.addEventListener('DOMContentLoaded', async () => {
         `;
 
         const linksPanel = document.createElement("div");
-        linksPanel.className = "options-group-links-panel hidden";
+        linksPanel.className = "options-group-links-panel"; // Visible by default
 
-        const linksList = document.createElement("div");
-        linksList.className = "options-links-list";
+        const linksContainer = document.createElement("div");
+        linksContainer.className = "options-links-list";
 
-        if (group.links && group.links.length > 0) {
-          group.links.forEach((link) => {
+        if (linksList.length > 0) {
+          linksList.forEach((rawLink) => {
+            const link = typeof rawLink === 'string' ? {
+              id: 'lnk_' + Math.random().toString(36).substr(2, 6),
+              url: rawLink,
+              title: rawLink
+            } : {
+              id: rawLink.id || ('lnk_' + Math.random().toString(36).substr(2, 6)),
+              url: rawLink.url || '',
+              title: rawLink.title || rawLink.url || ''
+            };
+
             const item = document.createElement("div");
             item.className = "options-link-item";
+            item.dataset.linkId = link.id;
 
             let faviconUrl = "";
             try {
@@ -792,35 +833,131 @@ document.addEventListener('DOMContentLoaded', async () => {
               faviconUrl = "../icons/icon16.png";
             }
 
-            item.innerHTML = `
-              <div class="options-link-info">
-                <img class="options-link-favicon" src="${faviconUrl}" onerror="this.src='../icons/icon16.png'" />
-                <a href="${escapeHtml(link.url)}" target="_blank" class="options-link-anchor" title="${escapeHtml(link.url)}">${escapeHtml(link.title || link.url)}</a>
-              </div>
-              <button type="button" class="btn-icon-action btn-icon-danger btn-delete-options-link" title="Delete link">
-                <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
-              </button>
-            `;
+            const renderNormalView = () => {
+              item.innerHTML = `
+                <div class="options-link-info">
+                  <img class="options-link-favicon" src="${faviconUrl}" onerror="this.src='../icons/icon16.png'" />
+                  <div class="options-link-details">
+                    <a href="${escapeHtml(link.url)}" target="_blank" class="options-link-anchor" title="${escapeHtml(link.url)}">${escapeHtml(link.title || link.url)}</a>
+                    ${link.title && link.title !== link.url ? `<span class="options-link-suburl" title="${escapeHtml(link.url)}">${escapeHtml(link.url)}</span>` : ''}
+                  </div>
+                </div>
+                <div class="options-link-actions">
+                  <button type="button" class="btn-icon-action btn-icon-edit btn-edit-options-link" title="Edit link URL and title">
+                    <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                      <path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"></path>
+                      <path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"></path>
+                    </svg>
+                  </button>
+                  <button type="button" class="btn-icon-action btn-icon-danger btn-delete-options-link" title="Delete link">
+                    <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                      <polyline points="3 6 5 6 21 6"></polyline>
+                      <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+                    </svg>
+                  </button>
+                </div>
+              `;
 
-            item.querySelector(".btn-delete-options-link").addEventListener("click", async () => {
-              const curGroups = await getGroups();
-              const g = curGroups.find((x) => x.id === group.id);
-              if (g) {
-                g.links = g.links.filter((l) => l.id !== link.id);
-                await saveGroups(curGroups);
-              }
-            });
+              item.querySelector(".btn-edit-options-link").addEventListener("click", () => {
+                renderEditView();
+              });
 
-            linksList.appendChild(item);
+              item.querySelector(".btn-delete-options-link").addEventListener("click", async () => {
+                const curGroups = await getGroups();
+                const g = curGroups.find((x) => x.id === group.id);
+                if (g && Array.isArray(g.links)) {
+                  g.links = g.links.filter((l) => (typeof l === 'object' && l.id ? l.id !== link.id : (l.url || l) !== link.url));
+                  await saveGroups(curGroups);
+                }
+              });
+            };
+
+            const renderEditView = () => {
+              item.innerHTML = `
+                <div class="options-link-edit-fields">
+                  <input type="text" class="form-control options-link-edit-url" value="${escapeHtml(link.url)}" placeholder="https://..." required />
+                  <input type="text" class="form-control options-link-edit-title" value="${escapeHtml(link.title && link.title !== link.url ? link.title : '')}" placeholder="Title (optional)" />
+                </div>
+                <div class="options-link-actions">
+                  <button type="button" class="btn-icon-action btn-icon-save btn-save-options-link" title="Save changes">
+                    <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                      <polyline points="20 6 9 17 4 12"></polyline>
+                    </svg>
+                  </button>
+                  <button type="button" class="btn-icon-action btn-icon-cancel btn-cancel-options-link" title="Cancel">
+                    <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                      <line x1="18" y1="6" x2="6" y2="18"></line>
+                      <line x1="6" y1="6" x2="18" y2="18"></line>
+                    </svg>
+                  </button>
+                </div>
+              `;
+
+              const inputUrl = item.querySelector(".options-link-edit-url");
+              const inputTitle = item.querySelector(".options-link-edit-title");
+              const btnSave = item.querySelector(".btn-save-options-link");
+              const btnCancel = item.querySelector(".btn-cancel-options-link");
+
+              inputUrl.focus();
+
+              const saveLinkChanges = async () => {
+                const newUrl = inputUrl.value.trim();
+                if (!newUrl) {
+                  inputUrl.focus();
+                  return;
+                }
+                let formattedUrl = newUrl;
+                if (!formattedUrl.startsWith("http://") && !formattedUrl.startsWith("https://") && formattedUrl.includes(".")) {
+                  formattedUrl = "https://" + formattedUrl;
+                }
+                const newTitle = inputTitle.value.trim() || formattedUrl;
+
+                const curGroups = await getGroups();
+                const g = curGroups.find((x) => x.id === group.id);
+                if (g && Array.isArray(g.links)) {
+                  const targetL = g.links.find((l) => (typeof l === 'object' && l.id ? l.id === link.id : (l.url || l) === link.url));
+                  if (targetL) {
+                    if (typeof targetL === 'string') {
+                      const idx = g.links.indexOf(targetL);
+                      g.links[idx] = { id: link.id, url: formattedUrl, title: newTitle };
+                    } else {
+                      targetL.url = formattedUrl;
+                      targetL.title = newTitle;
+                    }
+                    await saveGroups(curGroups);
+                  }
+                }
+              };
+
+              btnSave.addEventListener("click", saveLinkChanges);
+              btnCancel.addEventListener("click", renderNormalView);
+
+              const handleKeyDown = (e) => {
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  saveLinkChanges();
+                } else if (e.key === "Escape") {
+                  e.preventDefault();
+                  renderNormalView();
+                }
+              };
+
+              inputUrl.addEventListener("keydown", handleKeyDown);
+              inputTitle.addEventListener("keydown", handleKeyDown);
+            };
+
+            renderNormalView();
+            linksContainer.appendChild(item);
           });
         } else {
-          linksList.innerHTML = `<div class="group-empty-subtext">No links added to this group yet.</div>`;
+          linksContainer.innerHTML = `<div class="group-empty-subtext">No links added to this group yet. Add your first link below!</div>`;
         }
 
         const addBox = document.createElement("div");
         addBox.className = "options-add-link-box";
         addBox.innerHTML = `
-          <input type="text" class="form-control input-options-group-url" placeholder="Add URL or keyword to this group..." />
+          <input type="text" class="form-control input-options-group-url" placeholder="Add URL (e.g. https://...)" />
+          <input type="text" class="form-control input-options-group-title" placeholder="Title (optional)..." />
           <button type="button" class="btn-add-link-sophisticated btn-options-add-link">
             <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
               <line x1="12" y1="5" x2="12" y2="19"></line>
@@ -831,9 +968,10 @@ document.addEventListener('DOMContentLoaded', async () => {
         `;
 
         const inputUrl = addBox.querySelector(".input-options-group-url");
+        const inputTitle = addBox.querySelector(".input-options-group-title");
         const btnAdd = addBox.querySelector(".btn-options-add-link");
 
-        async function addLinkToGroup(urlToAdd) {
+        async function addLinkToGroup(urlToAdd, titleToAdd) {
           if (!urlToAdd) return;
           let formatted = urlToAdd.trim();
           if (!formatted.startsWith("http://") && !formatted.startsWith("https://") && formatted.includes(".")) {
@@ -843,47 +981,55 @@ document.addEventListener('DOMContentLoaded', async () => {
           const g = curGroups.find((x) => x.id === group.id);
           if (g) {
             if (!g.links) g.links = [];
-            if (!g.links.some((l) => l.url.toLowerCase() === formatted.toLowerCase())) {
+            const alreadyExists = g.links.some((l) => {
+              const u = typeof l === 'string' ? l : l.url;
+              return u && u.toLowerCase() === formatted.toLowerCase();
+            });
+            if (!alreadyExists) {
               g.links.push({
                 id: "lnk_" + Date.now() + "_" + Math.random().toString(36).substr(2, 4),
                 url: formatted,
-                title: formatted,
+                title: titleToAdd ? titleToAdd.trim() : formatted,
               });
               await saveGroups(curGroups);
             }
           }
         }
 
-        btnAdd.addEventListener("click", async () => {
+        const handleAdd = async () => {
           const val = inputUrl.value.trim();
+          const titleVal = inputTitle.value.trim();
           if (val) {
-            await addLinkToGroup(val);
+            await addLinkToGroup(val, titleVal);
             inputUrl.value = "";
+            inputTitle.value = "";
           }
-        });
+        };
 
-        inputUrl.addEventListener("keydown", async (e) => {
+        btnAdd.addEventListener("click", handleAdd);
+
+        const handleInputKey = (e) => {
           if (e.key === "Enter") {
             e.preventDefault();
-            const val = inputUrl.value.trim();
-            if (val) {
-              await addLinkToGroup(val);
-              inputUrl.value = "";
-            }
+            handleAdd();
           }
-        });
+        };
 
-        linksPanel.appendChild(linksList);
+        inputUrl.addEventListener("keydown", handleInputKey);
+        inputTitle.addEventListener("keydown", handleInputKey);
+
+        linksPanel.appendChild(linksContainer);
         linksPanel.appendChild(addBox);
 
-        // Header Actions: See All
+        // Header Actions: Toggle Links visibility
         const btnSeeAll = header.querySelector(".btn-see-all-group");
         btnSeeAll.addEventListener("click", () => {
-          btnSeeAll.classList.toggle("expanded");
-          linksPanel.classList.toggle("hidden");
+          const isExpanded = btnSeeAll.classList.toggle("expanded");
+          linksPanel.classList.toggle("hidden", !isExpanded);
+          btnSeeAll.querySelector("span").textContent = isExpanded ? "Hide Links" : `Show Links (${linksCount})`;
         });
 
-        // Header Actions: Edit
+        // Header Actions: Edit Group
         header.querySelector(".btn-options-edit-group").addEventListener("click", () => {
           editingGroupId = group.id;
           nameInput.value = group.name;
@@ -896,7 +1042,7 @@ document.addEventListener('DOMContentLoaded', async () => {
           nameInput.focus();
         });
 
-        // Header Actions: Delete
+        // Header Actions: Delete Group
         header.querySelector(".btn-options-delete-group").addEventListener("click", async () => {
           const confirmed = confirm(`Are you sure you want to delete the group "${group.name}"?`);
           if (!confirmed) return;
@@ -910,6 +1056,22 @@ document.addEventListener('DOMContentLoaded', async () => {
         card.appendChild(linksPanel);
         groupsListContainer.appendChild(card);
       });
+
+      // Check if a specific group should be highlighted (e.g. from popup gear icon)
+      try {
+        const { highlightGroupId } = await chrome.storage.local.get("highlightGroupId");
+        if (highlightGroupId) {
+          await chrome.storage.local.remove("highlightGroupId");
+          const targetCard = document.getElementById(`options-group-${highlightGroupId}`);
+          if (targetCard) {
+            targetCard.scrollIntoView({ behavior: "smooth", block: "center" });
+            targetCard.classList.add("highlight-card");
+            setTimeout(() => targetCard.classList.remove("highlight-card"), 2500);
+          }
+        }
+      } catch (err) {
+        console.warn("Could not highlight target group card:", err);
+      }
     }
 
     renderOptionsGroupsRef = renderOptionsGroups;
