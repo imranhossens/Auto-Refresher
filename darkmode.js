@@ -12,8 +12,7 @@
   const STORAGE_KEY = 'darkModeConfig';
   const BASE_STYLE_ID = '__ar-dm-base-style';
   const FILTER_STYLE_ID = '__ar-dm-filter-style';
-  const SVG_FILTERS_ID = '__ar-dm-svg-filters';
-  const ALPHA_LIFT_FILTER_ID = '__ar-dm-alpha-lift';
+  const SHEET_STYLE_ID = '__ar-dm-sheet-overrides';
   const TOAST_ID = '__ar-dm-toast';
   const FAST_CACHE_KEY = '__ar_dm_fast_v2';
 
@@ -93,6 +92,7 @@
 
   // Reversible state tracking for instant, zero-refresh toggle off
   const originalInlineStyles = new WeakMap();
+  const appliedInlineValues = new WeakMap(); // el -> Map<prop, value> written by us
   const originalImgSrcs = new WeakMap();
   const modifiedElements = new Set();
   const elementContextMap = new WeakMap(); // el -> { keepText: boolean, bgLum: number }
@@ -100,6 +100,37 @@
   const activeObservers = new Set();
   const imgProbeCache = new Map(); // src -> { kind, dataUri } | 'pending'
   const imgProbeWaiters = new Map(); // src -> Set<Element>
+  let styledThisFrame = new WeakSet();
+  let styledFrameResetScheduled = false;
+
+  function markStyledThisFrame(el) {
+    styledThisFrame.add(el);
+    if (!styledFrameResetScheduled) {
+      styledFrameResetScheduled = true;
+      requestAnimationFrame(() => {
+        styledThisFrame = new WeakSet();
+        styledFrameResetScheduled = false;
+      });
+    }
+  }
+
+  function drainOwnMutationRecords() {
+    for (const obs of activeObservers) {
+      try { obs.takeRecords(); } catch {}
+    }
+    if (headObserver) {
+      try { headObserver.takeRecords(); } catch {}
+    }
+  }
+
+  function recordAppliedStyle(el, prop, value) {
+    let map = appliedInlineValues.get(el);
+    if (!map) {
+      map = new Map();
+      appliedInlineValues.set(el, map);
+    }
+    map.set(prop, value);
+  }
 
   // Batched processing queue: Map<Element, boolean> (value = forceReeval)
   const pendingElements = new Map();
@@ -141,9 +172,26 @@
     return lastTwo;
   }
 
+  function getEffectiveUrlObj() {
+    try {
+      if (location.hostname) return location;
+      if (window.parent && window.parent !== window) {
+        try {
+          if (window.parent.location && window.parent.location.hostname) {
+            return window.parent.location;
+          }
+        } catch {}
+      }
+      if (document.referrer && /^https?:\/\//i.test(document.referrer)) {
+        return new URL(document.referrer);
+      }
+    } catch {}
+    return location;
+  }
+
   function getHostKey() {
     try {
-      return location.hostname.toLowerCase();
+      return (getEffectiveUrlObj().hostname || '').toLowerCase();
     } catch {
       return '';
     }
@@ -151,9 +199,11 @@
 
   function getPageKey() {
     try {
-      let path = location.pathname || '/';
+      const u = getEffectiveUrlObj();
+      if (!u.origin || u.origin === 'null') return '';
+      let path = u.pathname || '/';
       if (path.length > 1 && path.endsWith('/')) path = path.slice(0, -1);
-      return location.origin.toLowerCase() + path;
+      return u.origin.toLowerCase() + path;
     } catch {
       return '';
     }
@@ -481,10 +531,15 @@
     return changed ? next : null;
   }
 
-  // ---- Inline Style Save / Restore (Zero-Refresh Instant Reversal) ----
+  // ---- Inline Style Save / Restore (Zero-Refresh Instant Reversal + Batched Writes) ----
+  let batchWrites = null;
 
   function setTrackedStyle(el, prop, value) {
     if (!el || !el.style) return;
+    if (el.style.getPropertyValue(prop) === value && el.style.getPropertyPriority(prop) === 'important') {
+      recordAppliedStyle(el, prop, value);
+      return;
+    }
     let saved = originalInlineStyles.get(el);
     if (!saved) {
       saved = {};
@@ -496,10 +551,18 @@
         priority: el.style.getPropertyPriority(prop)
       };
     }
+    recordAppliedStyle(el, prop, value);
+    if (batchWrites) {
+      batchWrites.push(el, prop, value);
+      modifiedElements.add(el);
+      return;
+    }
     isInternalMutation = true;
     try {
       el.style.setProperty(prop, value, 'important');
       modifiedElements.add(el);
+      markStyledThisFrame(el);
+      drainOwnMutationRecords();
     } finally {
       isInternalMutation = false;
     }
@@ -539,8 +602,10 @@
         }
         originalInlineStyles.delete(el);
       }
+      appliedInlineValues.delete(el);
       modifiedElements.delete(el);
       elementContextMap.delete(el);
+      drainOwnMutationRecords();
     } finally {
       isInternalMutation = false;
     }
@@ -567,9 +632,11 @@
           }
         }
         originalInlineStyles.delete(el);
+        appliedInlineValues.delete(el);
         elementContextMap.delete(el);
       }
       modifiedElements.clear();
+      drainOwnMutationRecords();
     } finally {
       isInternalMutation = false;
     }
@@ -769,10 +836,10 @@
 
   function ensureImageIconVisibility(img, keepText) {
     if (!img || keepText || !currentlyApplied || currentConfig.mode === 'dim') return;
-    const rect = img.getBoundingClientRect();
-    const w = rect.width || img.width || 0;
-    const h = rect.height || img.height || 0;
-    if (w === 0 || h === 0 || w > 900 || h > 900) return;
+    if (originalImgSrcs.has(img)) return; // Already swapped by us
+    const w = img.naturalWidth || img.width || parseFloat(img.getAttribute('width')) || 0;
+    const h = img.naturalHeight || img.height || parseFloat(img.getAttribute('height')) || 0;
+    if (w > 900 || h > 900) return;
 
     const src = img.currentSrc || img.src || '';
     if (!src) return;
@@ -805,12 +872,13 @@
     probeRemoteImageUrl(img, src);
   }
 
-  function ensureBgImageGraphicVisibility(el, bgImg, keepText) {
+  function ensureBgImageGraphicVisibility(el, bgImg, keepText, cs) {
     if (!el || !bgImg || !currentlyApplied || currentConfig.mode === 'dim') return;
-    // Only inspect graphic/icon/illustration containers (not full-screen hero banners with text)
-    if (el.innerText && el.innerText.trim().length > 0) return;
-    const rect = el.getBoundingClientRect();
-    if (rect.width === 0 || rect.height === 0 || rect.width > 900 || rect.height > 900) return;
+    // Only inspect graphic/icon/illustration containers (avoid innerText & getBoundingClientRect reflows!)
+    if (el.textContent && el.textContent.trim().length > 0) return;
+    const w = cs ? parseFloat(cs.width) : 0;
+    const h = cs ? parseFloat(cs.height) : 0;
+    if (!w || !h || w > 900 || h > 900) return;
 
     const match = bgImg.match(/url\(\s*["']?([^"')]+)["']?\s*\)/i);
     if (!match || !match[1]) return;
@@ -856,22 +924,72 @@
     return false;
   }
 
+  const darkenedIframeDocs = new Set();
+  const remoteCssRequested = new Set();
+
+  function processSameOriginIframe(iframe, isPureBlack) {
+    if (!iframe || !currentlyApplied || currentConfig.mode === 'dim') return;
+
+    const darkenDoc = () => {
+      if (!currentlyApplied || currentConfig.mode === 'dim') return;
+      try {
+        // NEVER touch hidden/0x0 internal JS bootstrap iframes (e.g. Gmail's about:blank loader frames!)
+        if ((iframe.offsetWidth || 0) < 40 || (iframe.offsetHeight || 0) < 40) return;
+        const doc = iframe.contentDocument;
+        if (!doc || !doc.documentElement || doc.readyState !== 'complete') return;
+        if (!doc.body || doc.body.childElementCount === 0) return;
+        const bgBase = isPureBlack ? '#000000' : '#141519';
+        setTrackedStyle(iframe, 'background-color', bgBase);
+        setTrackedStyle(iframe, 'color-scheme', 'dark');
+        darkenedIframeDocs.add(doc);
+        setOrRemoveStyleInDoc(doc, BASE_STYLE_ID, buildBaseCss(currentConfig));
+        syncStylesheetOverrides(doc, isPureBlack);
+        attachRootObserver(doc.documentElement);
+        queueSubtree(doc.body, false);
+        flushPendingQueue(2500);
+      } catch {
+        // Cross-origin iframe (handled by its own darkmode.js instance)
+      }
+    };
+
+    if (!iframe.__arDmLoadBound) {
+      iframe.__arDmLoadBound = true;
+      iframe.addEventListener('load', darkenDoc);
+    }
+    darkenDoc();
+  }
+
   function processElement(el, isAmoled, forceReeval = false) {
-    if (!el || el.nodeType !== 1 || el.id === TOAST_ID || el.id === SVG_FILTERS_ID) return;
-    if (el.closest && el.closest(`#${SVG_FILTERS_ID}`)) return;
+    if (!el || el.nodeType !== 1 || el.id === TOAST_ID) return;
     const tag = el.tagName;
     if (SKIP_TAGS.has(tag)) return;
 
-    // Never touch video/iframe/embed/object/picture directly
-    if (tag === 'VIDEO' || tag === 'IFRAME' || tag === 'EMBED' || tag === 'OBJECT' || tag === 'PICTURE') {
+    // Handle same-origin / srcdoc / about:blank email viewer iframes synchronously!
+    if (tag === 'IFRAME') {
+      processSameOriginIframe(el, isAmoled);
+      return;
+    }
+
+    // Never touch video/embed/object/picture directly
+    if (tag === 'VIDEO' || tag === 'EMBED' || tag === 'OBJECT' || tag === 'PICTURE') {
+      return;
+    }
+
+    // Fast skip for already-darkened unchanged elements on SPA navigation rescans
+    if (!forceReeval && originalInlineStyles.has(el)) {
+      if (el.shadowRoot && !observedRoots.has(el.shadowRoot)) {
+        attachRootObserver(el.shadowRoot);
+        queueSubtree(el.shadowRoot, false);
+      }
       return;
     }
 
     // Probe 2D/Lottie canvas graphics for dark-mono or semi-transparent dark shapes
     if (tag === 'CANVAS') {
-      const rect = el.getBoundingClientRect();
-      if (rect.width > 0 && rect.width <= 900 && rect.height > 0 && rect.height <= 900) {
-        const verdict = probeDrawSourceForGraphicVisibility(el, el.width || rect.width, el.height || rect.height);
+      const cw = el.width || 0;
+      const ch = el.height || 0;
+      if (cw > 0 && cw <= 900 && ch > 0 && ch <= 900) {
+        const verdict = probeDrawSourceForGraphicVisibility(el, cw, ch);
         if (verdict && verdict !== 'normal') {
           applyGraphicVerdictFilter(el, verdict);
         }
@@ -991,8 +1109,9 @@
         // Only treat SMALL icons (<= 48px) with an opaque bright backdrop + dark glyph as self-contained badges.
         // Never skip large illustrations (like Google Play Console graphics)!
         if (!svgKeepText) {
-          const rect = el.getBoundingClientRect();
-          if (rect.width > 0 && rect.width <= 48 && rect.height > 0 && rect.height <= 48) {
+          const sw = parseFloat(cs.width) || parseFloat(el.getAttribute('width')) || 0;
+          const sh = parseFloat(cs.height) || parseFloat(el.getAttribute('height')) || 0;
+          if (sw > 0 && sw <= 48 && sh > 0 && sh <= 48) {
             const shapes = el.querySelectorAll('rect, circle, ellipse, path, polygon');
             let hasBrightBackdrop = false;
             let hasDarkGlyph = false;
@@ -1053,7 +1172,7 @@
 
     if (hasPhotoBg) {
       // Element has a background image/pattern: probe graphic illustrations
-      ensureBgImageGraphicVisibility(el, bgImg, false);
+      ensureBgImageGraphicVisibility(el, bgImg, false, cs);
     } else if (hasGradientBg) {
       const gradRes = transformGradientBackground(bgImg, isAmoled);
       if (gradRes) {
@@ -1138,7 +1257,7 @@
   }
 
   function queueElement(el, forceReeval = false) {
-    if (!el || el.nodeType !== 1 || el.id === TOAST_ID || el.id === SVG_FILTERS_ID || SKIP_TAGS.has(el.tagName)) return;
+    if (!el || el.nodeType !== 1 || el.id === TOAST_ID || SKIP_TAGS.has(el.tagName)) return;
     const prev = pendingElements.get(el);
     pendingElements.set(el, Boolean(prev || forceReeval));
   }
@@ -1151,7 +1270,8 @@
       count++;
     }
     try {
-      const walker = document.createTreeWalker(root, NodeFilter.SHOW_ELEMENT);
+      const ownerDoc = root.ownerDocument || document;
+      const walker = ownerDoc.createTreeWalker(root, NodeFilter.SHOW_ELEMENT);
       let node = walker.nextNode();
       while (node) {
         if (!SKIP_TAGS.has(node.tagName)) {
@@ -1173,17 +1293,60 @@
       return;
     }
     const isPureBlack = currentConfig.mode !== 'charcoal';
-    const budget = syncLimit > 0 ? syncLimit : 220;
-    let count = 0;
+    const maxTotal = syncLimit > 0 ? syncLimit : 2500;
+    const deadline = performance.now() + (syncLimit > 0 ? 28 : 16);
+    const CHUNK_SIZE = 250;
+    let totalProcessed = 0;
 
-    for (const [el, forceReeval] of pendingElements) {
-      pendingElements.delete(el);
-      if (!el.isConnected) continue;
+    // Process in tight mini-batches (Restore -> Read -> Write) so NO element is ever left
+    // restored to white if the frame deadline is reached!
+    while (pendingElements.size > 0 && totalProcessed < maxTotal) {
+      const chunk = [];
+      for (const [el, forceReeval] of pendingElements) {
+        pendingElements.delete(el);
+        if (!el.isConnected) continue;
+        chunk.push([el, forceReeval]);
+        if (chunk.length >= CHUNK_SIZE) break;
+      }
+      if (chunk.length === 0) break;
+
+      // Phase 0: Restore ONLY elements in this mini-batch that actually need re-evaluation
+      for (let i = 0; i < chunk.length; i++) {
+        const [el, forceReeval] = chunk[i];
+        if (forceReeval && originalInlineStyles.has(el)) {
+          restoreElementStyles(el);
+        }
+      }
+
+      // Phase 1: Pure reads (getComputedStyle) with writes buffered into batchWrites
+      const writes = [];
+      batchWrites = writes;
       try {
-        processElement(el, isPureBlack, forceReeval);
-      } catch {}
-      count++;
-      if (count >= budget) break;
+        for (let i = 0; i < chunk.length; i++) {
+          try {
+            processElement(chunk[i][0], isPureBlack, chunk[i][1]);
+          } catch {}
+        }
+      } finally {
+        batchWrites = null;
+      }
+
+      // Phase 2: Apply all inline style writes for this mini-batch atomically before checking deadline
+      if (writes.length > 0) {
+        isInternalMutation = true;
+        try {
+          for (let i = 0; i < writes.length; i += 3) {
+            writes[i].style.setProperty(writes[i + 1], writes[i + 2], 'important');
+            markStyledThisFrame(writes[i]);
+          }
+          drainOwnMutationRecords();
+        } finally {
+          isInternalMutation = false;
+        }
+      }
+
+      totalProcessed += chunk.length;
+      if (performance.now() >= deadline) break;
     }
 
     if (pendingElements.size > 0) {
@@ -1199,34 +1362,39 @@
     });
   }
 
-  // Flicker-free full page rescan (used after route changes, lazy CSS loads, and window.load)
-  function rescanPage(immediateSync = true) {
+  // Flicker-free page scan: by default (forceReeval = false) only processes NEW/unprocessed elements
+  // so already-darkened inbox chrome & containers never flash white on route changes!
+  function rescanPage(immediateSync = true, forceReeval = false) {
     if (!currentlyApplied || currentConfig.mode === 'dim') return;
     const root = document.body || document.documentElement;
     if (!root) return;
-    queueSubtree(root, true);
+    queueSubtree(root, forceReeval);
     if (immediateSync) {
-      flushPendingQueue(300);
+      flushPendingQueue(3000);
     }
   }
 
-  function scheduleDebouncedRescan(delayMs = 110) {
+  function scheduleDebouncedRescan(delayMs = 16, forceReeval = true) {
     if (!currentlyApplied || currentConfig.mode === 'dim') return;
     if (rescanDebounceTimer) clearTimeout(rescanDebounceTimer);
     rescanDebounceTimer = setTimeout(() => {
       rescanDebounceTimer = 0;
-      rescanPage(true);
+      if (forceReeval) {
+        syncStylesheetOverrides(document, currentConfig.mode !== 'charcoal');
+      }
+      rescanPage(true, forceReeval);
     }, delayMs);
   }
 
   function triggerNavigationRescan() {
     if (!currentlyApplied || currentConfig.mode === 'dim') return;
     clearSettleTimers();
-    rescanPage(true);
-    // Catch async SPA data rendering and lazy route CSS chunks cleanly
-    settleTimers.push(setTimeout(() => rescanPage(true), 220));
-    settleTimers.push(setTimeout(() => rescanPage(true), 650));
-    settleTimers.push(setTimeout(() => rescanPage(false), 1400));
+    syncStylesheetOverrides(document, currentConfig.mode !== 'charcoal');
+    // Use forceReeval = false so already-dark chrome never flashes white when shifting emails/routes
+    rescanPage(true, false);
+    settleTimers.push(setTimeout(() => rescanPage(true, false), 80));
+    settleTimers.push(setTimeout(() => rescanPage(true, false), 260));
+    settleTimers.push(setTimeout(() => rescanPage(false, false), 650));
   }
 
   // ---- Head Stylesheet Observer (catches CSS-in-JS & lazy route CSS chunks) ----
@@ -1237,7 +1405,7 @@
     for (const link of links) {
       if (!link.__arDmLoadBound) {
         link.__arDmLoadBound = true;
-        link.addEventListener('load', () => scheduleDebouncedRescan(60), { once: true });
+        link.addEventListener('load', () => scheduleDebouncedRescan(16), { once: true });
       }
     }
   }
@@ -1256,26 +1424,26 @@
         if (m.type === 'childList') {
           for (const node of m.addedNodes) {
             if (node.nodeType !== 1) continue;
-            if (node.id === BASE_STYLE_ID || node.id === FILTER_STYLE_ID) continue;
+            if (node.id === BASE_STYLE_ID || node.id === FILTER_STYLE_ID || node.id === SHEET_STYLE_ID || node.hasAttribute('data-ar-dm-remote-sheet')) continue;
             if (node.tagName === 'STYLE') {
               stylesheetChanged = true;
             } else if (node.tagName === 'LINK' && /stylesheet/i.test(node.rel || '')) {
               stylesheetChanged = true;
               if (!node.__arDmLoadBound) {
                 node.__arDmLoadBound = true;
-                node.addEventListener('load', () => scheduleDebouncedRescan(60), { once: true });
+                node.addEventListener('load', () => scheduleDebouncedRescan(16, true), { once: true });
               }
             }
           }
         } else if (m.type === 'characterData') {
           const parent = m.target && m.target.parentNode;
-          if (parent && parent.tagName === 'STYLE' && parent.id !== BASE_STYLE_ID && parent.id !== FILTER_STYLE_ID) {
+          if (parent && parent.tagName === 'STYLE' && parent.id !== BASE_STYLE_ID && parent.id !== FILTER_STYLE_ID && parent.id !== SHEET_STYLE_ID && !parent.hasAttribute('data-ar-dm-remote-sheet')) {
             stylesheetChanged = true;
           }
         }
       }
       if (stylesheetChanged) {
-        scheduleDebouncedRescan(90);
+        scheduleDebouncedRescan(16, true);
       }
     });
 
@@ -1302,31 +1470,61 @@
         return;
       }
 
+      let addedAny = false;
       for (const m of mutations) {
         if (m.type === 'childList') {
           for (const node of m.addedNodes) {
             if (node.nodeType !== 1 || node.id === TOAST_ID) continue;
             if (node.tagName === 'STYLE' || (node.tagName === 'LINK' && /stylesheet/i.test(node.rel || ''))) {
-              if (node.id !== BASE_STYLE_ID && node.id !== FILTER_STYLE_ID) {
-                scheduleDebouncedRescan(90);
+              if (node.id !== BASE_STYLE_ID && node.id !== FILTER_STYLE_ID && node.id !== SHEET_STYLE_ID && !node.hasAttribute('data-ar-dm-remote-sheet')) {
+                scheduleDebouncedRescan(16, true);
               }
               continue;
             }
             if (!SKIP_TAGS.has(node.tagName)) {
-              queueSubtree(node, true);
+              queueSubtree(node, false);
+              addedAny = true;
             }
           }
         } else if (m.type === 'attributes') {
           const target = m.target;
           if (target && target.nodeType === 1 && target.id !== TOAST_ID && !SKIP_TAGS.has(target.tagName)) {
             if (target === document.documentElement || target === document.body) {
-              scheduleDebouncedRescan(90);
+              if (m.attributeName !== 'style') {
+                scheduleDebouncedRescan(16, false);
+              }
+            } else if (m.attributeName === 'style') {
+              // Guard against microtask loops & ignore non-color style animations (e.g. Gmail progress bar width/transform)
+              if (styledThisFrame.has(target)) continue;
+              const st = target.style;
+              if (!st) continue;
+              const prev = appliedInlineValues.get(target);
+              const curBg = st.getPropertyValue('background-color');
+              const curColor = st.getPropertyValue('color');
+              const bgChanged = Boolean(curBg && (!prev || prev.get('background-color') !== curBg));
+              const colorChanged = Boolean(curColor && (!prev || prev.get('color') !== curColor));
+              if (bgChanged || colorChanged) {
+                originalInlineStyles.delete(target);
+                appliedInlineValues.delete(target);
+                queueElement(target, false);
+                addedAny = true;
+              }
+            } else if (m.attributeName === 'bgcolor') {
+              if (!styledThisFrame.has(target)) {
+                queueElement(target, true);
+                addedAny = true;
+              }
             } else {
-              // Re-evaluate target and its descendants since class changes often affect child CSS rules
+              // Class / state change -> re-evaluate target and immediate descendants synchronously before paint
               queueSubtree(target, true, 160);
+              addedAny = true;
             }
           }
         }
+      }
+      // Flush synchronously inside the microtask BEFORE Chrome paints the frame -> zero white flash!
+      if (addedAny && pendingElements.size > 0) {
+        flushPendingQueue(2500);
       }
     });
 
@@ -1334,7 +1532,7 @@
       childList: true,
       subtree: true,
       attributes: true,
-      attributeFilter: ['class', 'hidden', 'aria-expanded', 'aria-selected', 'data-state', 'data-theme']
+      attributeFilter: ['class', 'style', 'bgcolor', 'hidden', 'aria-expanded', 'aria-selected', 'data-state', 'data-theme']
     });
     activeObservers.add(observer);
   }
@@ -1389,10 +1587,40 @@
         color-scheme: dark !important;
         background-color: ${bgBase} !important;
         color: ${textMain} !important;
+        transition: none !important;
       }
       body {
         background-color: ${bgBase} !important;
         color: ${textMain} !important;
+        transition: none !important;
+      }
+      iframe {
+        color-scheme: dark;
+        background-color: ${bgBase};
+      }
+      /* 0ms C++-level rules for HTML email tables & white inline styles (zero white flash!) */
+      [bgcolor="#ffffff" i], [bgcolor="#fff" i], [bgcolor="white" i],
+      [bgcolor="#fafafa" i], [bgcolor="#f8f9fa" i], [bgcolor="#f5f5f5" i],
+      [bgcolor="#f5f5f7" i], [bgcolor="#f2f2f2" i], [bgcolor="#f0f0f0" i],
+      [bgcolor="#eeeeee" i], [bgcolor="#eee" i], [bgcolor="#f7f7f7" i] {
+        background-color: ${bgBase} !important;
+        color: ${textMain} !important;
+      }
+      [style*="background-color: rgb(255, 255, 255)" i],
+      [style*="background-color:rgb(255,255,255)" i],
+      [style*="background-color: #ffffff" i],
+      [style*="background-color:#ffffff" i],
+      [style*="background-color: #fff" i],
+      [style*="background-color:#fff" i],
+      [style*="background-color: white" i],
+      [style*="background-color:white" i],
+      [style*="background: #ffffff" i],
+      [style*="background:#ffffff" i],
+      [style*="background: #fff" i],
+      [style*="background:#fff" i],
+      [style*="background: white" i],
+      [style*="background:white" i] {
+        background-color: ${bgBase} !important;
       }
       /* Prevent multiply/darken blend modes from turning images & illustrations black */
       img, svg, canvas, [role="img"], g, path, rect, circle {
@@ -1451,20 +1679,251 @@
     `;
   }
 
-  function setOrRemoveStyle(id, cssText) {
-    const existing = document.getElementById(id);
+  function setOrRemoveStyleInDoc(doc, id, cssText) {
+    if (!doc) return;
+    const existing = doc.getElementById(id);
     if (!cssText) {
-      if (existing) existing.remove();
+      if (existing) {
+        isInternalMutation = true;
+        try {
+          existing.remove();
+          drainOwnMutationRecords();
+        } finally {
+          isInternalMutation = false;
+        }
+      }
       return;
     }
     let el = existing;
     if (!el) {
-      el = document.createElement('style');
+      el = doc.createElement('style');
       el.id = id;
-      (document.head || document.documentElement).appendChild(el);
+      isInternalMutation = true;
+      try {
+        (doc.head || doc.documentElement).appendChild(el);
+        drainOwnMutationRecords();
+      } finally {
+        isInternalMutation = false;
+      }
     }
     if (el.textContent !== cssText) {
-      el.textContent = cssText;
+      isInternalMutation = true;
+      try {
+        el.textContent = cssText;
+        drainOwnMutationRecords();
+      } finally {
+        isInternalMutation = false;
+      }
+    }
+  }
+
+  function setOrRemoveStyle(id, cssText) {
+    setOrRemoveStyleInDoc(document, id, cssText);
+  }
+
+  // ---- Proactive CSS Stylesheet Mirroring (0ms SPA / Mail Inbox / Hover / Modal Dark Mode) ----
+
+  const NAMED_SHEET_COLORS = {
+    white: { r: 255, g: 255, b: 255, a: 1 },
+    black: { r: 0, g: 0, b: 0, a: 1 },
+    whitesmoke: { r: 245, g: 245, b: 245, a: 1 },
+    ghostwhite: { r: 248, g: 248, b: 255, a: 1 },
+    aliceblue: { r: 240, g: 248, b: 255, a: 1 },
+    gainsboro: { r: 220, g: 220, b: 220, a: 1 },
+    lightgray: { r: 211, g: 211, b: 211, a: 1 },
+    lightgrey: { r: 211, g: 211, b: 211, a: 1 },
+    silver: { r: 192, g: 192, b: 192, a: 1 },
+    gray: { r: 128, g: 128, b: 128, a: 1 },
+    grey: { r: 128, g: 128, b: 128, a: 1 },
+    dimgray: { r: 105, g: 105, b: 105, a: 1 },
+    dimgrey: { r: 105, g: 105, b: 105, a: 1 }
+  };
+
+  function parseCssRuleColor(val) {
+    if (!val) return null;
+    const s = val.trim().toLowerCase();
+    if (!s || s === 'none' || s === 'transparent' || s === 'inherit' || s === 'initial' || s === 'unset' || s === 'currentcolor' || s.includes('var(') || s.includes('url(') || s.includes('gradient(')) {
+      return null;
+    }
+    if (NAMED_SHEET_COLORS[s]) return NAMED_SHEET_COLORS[s];
+    if (s.startsWith('#')) {
+      let h = s.slice(1);
+      if (h.length === 3) h = h[0] + h[0] + h[1] + h[1] + h[2] + h[2];
+      if (h.length === 6) {
+        return {
+          r: parseInt(h.slice(0, 2), 16),
+          g: parseInt(h.slice(2, 4), 16),
+          b: parseInt(h.slice(4, 6), 16),
+          a: 1
+        };
+      }
+      return null;
+    }
+    if (s.startsWith('rgb')) return parseRgba(s);
+    return null;
+  }
+
+  function transformCssRulesList(rules, isPureBlack, out) {
+    if (!rules) return;
+    for (let i = 0; i < rules.length; i++) {
+      const rule = rules[i];
+      if (!rule) continue;
+      if (rule.type === 1 && rule.selectorText && rule.style) {
+        const st = rule.style;
+        const decls = [];
+        let keptVibrantBg = false;
+
+        const bgVal = st.backgroundColor;
+        if (bgVal) {
+          const rgba = parseCssRuleColor(bgVal);
+          if (rgba && rgba.a >= 0.05) {
+            const bgRes = transformBackgroundColor(rgba, isPureBlack, false);
+            if (bgRes.changed && bgRes.css) {
+              const imp = st.getPropertyPriority('background-color') ? ' !important' : '';
+              decls.push(`background-color:${bgRes.css}${imp}`);
+            } else if (bgRes.keepText) {
+              keptVibrantBg = true;
+            }
+          }
+        }
+
+        if (!keptVibrantBg && st.color) {
+          const cRgba = parseCssRuleColor(st.color);
+          if (cRgba && cRgba.a >= 0.05) {
+            const { l, chroma } = rgbToHsl(cRgba.r, cRgba.g, cRgba.b);
+            if (chroma < 0.14 && l < 0.68) {
+              const nextC = transformForegroundColor(cRgba, false, 0);
+              if (nextC) {
+                const imp = st.getPropertyPriority('color') ? ' !important' : '';
+                decls.push(`color:${nextC}${imp}`);
+              }
+            }
+          }
+        }
+
+        const borderProps = ['border-top-color', 'border-right-color', 'border-bottom-color', 'border-left-color'];
+        for (let b = 0; b < borderProps.length; b++) {
+          const bp = borderProps[b];
+          const bVal = st.getPropertyValue(bp);
+          if (!bVal) continue;
+          const bRgba = parseCssRuleColor(bVal);
+          if (!bRgba || bRgba.a < 0.05) continue;
+          const { l, chroma } = rgbToHsl(bRgba.r, bRgba.g, bRgba.b);
+          if (chroma < 0.14 && l > 0.55) {
+            const nextB = transformBorderColor(bRgba, false);
+            if (nextB) {
+              const imp = st.getPropertyPriority(bp) ? ' !important' : '';
+              decls.push(`${bp}:${nextB}${imp}`);
+            }
+          }
+        }
+
+        if (decls.length > 0) {
+          out.push(`${rule.selectorText}{${decls.join(';')}}`);
+        }
+      } else if (rule.cssRules && rule.cssRules.length > 0) {
+        const inner = [];
+        transformCssRulesList(rule.cssRules, isPureBlack, inner);
+        if (inner.length > 0) {
+          if (rule.type === 4 && rule.conditionText) {
+            out.push(`@media ${rule.conditionText}{${inner.join('')}}`);
+          } else if (rule.type === 12 && rule.conditionText) {
+            out.push(`@supports ${rule.conditionText}{${inner.join('')}}`);
+          } else {
+            out.push(inner.join(''));
+          }
+        }
+      }
+    }
+  }
+
+  function syncStylesheetOverrides(doc, isPureBlack) {
+    if (!doc || !currentlyApplied || currentConfig.mode === 'dim') return;
+    const out = [];
+    const sheets = doc.styleSheets;
+    if (!sheets) return;
+
+    for (let i = 0; i < sheets.length; i++) {
+      const sheet = sheets[i];
+      if (!sheet) continue;
+      const owner = sheet.ownerNode;
+      if (
+        owner &&
+        (owner.id === BASE_STYLE_ID ||
+          owner.id === FILTER_STYLE_ID ||
+          owner.id === SHEET_STYLE_ID ||
+          (owner.hasAttribute && owner.hasAttribute('data-ar-dm-remote-sheet')))
+      ) {
+        continue;
+      }
+
+      try {
+        const rules = sheet.cssRules;
+        if (rules && rules.length > 0) {
+          transformCssRulesList(rules, isPureBlack, out);
+        }
+      } catch {
+        // Cross-origin CDN stylesheet (e.g. Gmail gstatic.com / Outlook CDN) -> transform proactively in background.js!
+        const href = sheet.href;
+        const reqKey = `${isPureBlack ? '1' : '0'}|${href}`;
+        if (href && /^https?:\/\//i.test(href) && !remoteCssRequested.has(reqKey)) {
+          remoteCssRequested.add(reqKey);
+          try {
+            chrome.runtime.sendMessage(
+              { type: 'darkmode-transform-css', url: href, isPureBlack },
+              (res) => {
+                if (chrome.runtime.lastError || !res || !res.css || !currentlyApplied || currentConfig.mode === 'dim') return;
+                if (!doc.documentElement) return;
+                let styleEl = doc.querySelector(`style[data-ar-dm-remote-sheet="${CSS.escape(href)}"]`);
+                isInternalMutation = true;
+                try {
+                  if (!styleEl) {
+                    styleEl = doc.createElement('style');
+                    styleEl.setAttribute('data-ar-dm-remote-sheet', href);
+                    (doc.head || doc.documentElement).appendChild(styleEl);
+                  }
+                  if (styleEl.textContent !== res.css) {
+                    styleEl.textContent = res.css;
+                  }
+                  drainOwnMutationRecords();
+                } finally {
+                  isInternalMutation = false;
+                }
+              }
+            );
+          } catch {}
+        }
+      }
+    }
+
+    const combinedCss = out.join('');
+    setOrRemoveStyleInDoc(doc, SHEET_STYLE_ID, combinedCss);
+    // Keep our override style tag at the very end of <head> so equal-specificity rules win cleanly
+    const sheetEl = doc.getElementById(SHEET_STYLE_ID);
+    const head = doc.head;
+    if (sheetEl && head && head.lastElementChild !== sheetEl) {
+      isInternalMutation = true;
+      try {
+        head.appendChild(sheetEl);
+        drainOwnMutationRecords();
+      } finally {
+        isInternalMutation = false;
+      }
+    }
+  }
+
+  function removeAllSheetOverrides(doc) {
+    if (!doc) return;
+    setOrRemoveStyleInDoc(doc, SHEET_STYLE_ID, '');
+    const remotes = doc.querySelectorAll ? doc.querySelectorAll('style[data-ar-dm-remote-sheet]') : [];
+    if (remotes.length > 0) {
+      isInternalMutation = true;
+      try {
+        for (const node of remotes) node.remove();
+        drainOwnMutationRecords();
+      } finally {
+        isInternalMutation = false;
+      }
     }
   }
 
@@ -1550,17 +2009,6 @@
     return { active: globalActive, source: globalActive ? 'global' : 'off' };
   }
 
-  function writeFastCache(active, mode) {
-    try {
-      if (!isTopFrame) return;
-      if (active) {
-        localStorage.setItem(FAST_CACHE_KEY, mode || 'smart');
-      } else {
-        localStorage.removeItem(FAST_CACHE_KEY);
-      }
-    } catch {}
-  }
-
   // ---- Main Apply / Revert Lifecycle ----
 
   function startDynamicEngine(config) {
@@ -1573,8 +2021,13 @@
     if (config.mode === 'dim') {
       disconnectAllObservers();
       restoreAllElements();
+      removeAllSheetOverrides(document);
+      html.setAttribute('data-ar-dm-painted', '1');
       return;
     }
+
+    const isPureBlack = config.mode !== 'charcoal';
+    syncStylesheetOverrides(document, isPureBlack);
 
     const runWalk = () => {
       if (!currentlyApplied || currentConfig.mode === 'dim') return;
@@ -1582,9 +2035,11 @@
       if (!root) return;
       attachHeadObserver();
       attachRootObserver(document.documentElement);
-      queueSubtree(root, true);
-      // Immediately transform the first ~300 visible elements synchronously so toggling feels instant
-      flushPendingQueue(300);
+      syncStylesheetOverrides(document, currentConfig.mode !== 'charcoal');
+      queueSubtree(root, false);
+      // Transform the entire visible DOM synchronously in zero-reflow mini-batches, then reveal immediately
+      flushPendingQueue(3000);
+      html.setAttribute('data-ar-dm-painted', '1');
     };
 
     if (document.body) {
@@ -1619,15 +2074,16 @@
     html.setAttribute('data-ar-dm-ready', '1');
 
     if (active) {
-      // If switching between Smart <-> AMOLED <-> Dim while active, cleanly reset inline overrides first
+      // If switching between Pure Black <-> Charcoal <-> Dim while active, cleanly reset overrides first
       if (currentlyApplied && modeChanged) {
         disconnectAllObservers();
         restoreAllElements();
+        removeAllSheetOverrides(document);
+        remoteCssRequested.clear();
       }
       currentlyApplied = true;
       appliedMode = config.mode || 'smart';
       html.setAttribute('data-ar-dm', 'on');
-      writeFastCache(true, appliedMode);
 
       if (stateChanged || modeChanged) {
         startDynamicEngine(config);
@@ -1641,12 +2097,20 @@
       appliedMode = null;
       html.removeAttribute('data-ar-dm');
       html.removeAttribute('data-ar-dm-ready');
+      html.removeAttribute('data-ar-dm-painted');
       disconnectAllObservers();
       restoreAllElements();
-      removeSvgFilterDefs();
+      removeAllSheetOverrides(document);
+      remoteCssRequested.clear();
+      for (const idoc of darkenedIframeDocs) {
+        try {
+          setOrRemoveStyleInDoc(idoc, BASE_STYLE_ID, '');
+          removeAllSheetOverrides(idoc);
+        } catch {}
+      }
+      darkenedIframeDocs.clear();
       setOrRemoveStyle(BASE_STYLE_ID, '');
       setOrRemoveStyle(FILTER_STYLE_ID, '');
-      writeFastCache(false);
     }
   }
 
@@ -1845,6 +2309,48 @@
     }
   }, true);
 
+  // Listen for force-sync and navigation messages in ALL frames (including email viewer iframes)
+  try {
+    chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
+      if (!msg || !msg.type) return;
+      if (msg.type === 'darkmode-force-sync') {
+        loadAndApply().then(() => sendResponse({ ok: true, active: currentlyApplied }));
+        return true;
+      }
+      if (msg.type === 'darkmode-page-navigated') {
+        lastUrl = location.href;
+        handleUrlChanged();
+        sendResponse({ ok: true });
+        return true;
+      }
+      if (!isTopFrame) return;
+      if (msg.type === 'darkmode-ping') {
+        sendResponse({ ok: true, active: currentlyApplied });
+        return true;
+      }
+      if (msg.type === 'darkmode-toggle-shortcut') {
+        toggleCurrentSiteViaShortcut().then(() => sendResponse({ ok: true, active: currentlyApplied }));
+        return true;
+      }
+      if (msg.type === 'darkmode-show-toast' && msg.message) {
+        showToast(String(msg.message));
+        sendResponse({ ok: true });
+        return true;
+      }
+      if (msg.type === 'darkmode-get-page-state') {
+        const decision = evaluateShouldApply(currentConfig);
+        sendResponse({
+          active: currentlyApplied,
+          source: decision.source,
+          isNativeDark,
+          hostKey: getHostKey(),
+          pageKey: getPageKey()
+        });
+        return true;
+      }
+    });
+  } catch {}
+
   if (isTopFrame) {
     const checkUrlChange = () => {
       if (location.href !== lastUrl) {
@@ -1866,45 +2372,5 @@
 
     window.addEventListener('popstate', checkUrlChange);
     window.addEventListener('hashchange', checkUrlChange);
-
-    try {
-      chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
-        if (!msg || !msg.type) return;
-        if (msg.type === 'darkmode-ping') {
-          sendResponse({ ok: true, active: currentlyApplied });
-          return true;
-        }
-        if (msg.type === 'darkmode-page-navigated') {
-          lastUrl = location.href;
-          handleUrlChanged();
-          sendResponse({ ok: true });
-          return true;
-        }
-        if (msg.type === 'darkmode-force-sync') {
-          loadAndApply().then(() => sendResponse({ ok: true, active: currentlyApplied }));
-          return true;
-        }
-        if (msg.type === 'darkmode-toggle-shortcut') {
-          toggleCurrentSiteViaShortcut().then(() => sendResponse({ ok: true, active: currentlyApplied }));
-          return true;
-        }
-        if (msg.type === 'darkmode-show-toast' && msg.message) {
-          showToast(String(msg.message));
-          sendResponse({ ok: true });
-          return true;
-        }
-        if (msg.type === 'darkmode-get-page-state') {
-          const decision = evaluateShouldApply(currentConfig);
-          sendResponse({
-            active: currentlyApplied,
-            source: decision.source,
-            isNativeDark,
-            hostKey: getHostKey(),
-            pageKey: getPageKey()
-          });
-          return true;
-        }
-      });
-    } catch {}
   }
 })();

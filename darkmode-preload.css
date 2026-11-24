@@ -1,7 +1,17 @@
-/* 0ms anti-flash pure solid black shield registered dynamically for Always On or enabled domains.
-   Dropped automatically as soon as darkmode.js initializes (data-ar-dm-ready="1"). */
-html:not([data-ar-dm="off"]):not([data-ar-dm-ready="1"]),
-body:not([data-ar-dm="off"]):not([data-ar-dm-ready="1"]) {
+/* 0ms anti-flash pure solid black shield registered dynamically ONLY for enabled domains
+   when Dark Mode is ON. Dropped automatically as soon as darkmode.js finishes its first dark pass. */
+@keyframes __arDmRevealFallback {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+html:not([data-ar-dm="off"]):not([data-ar-dm-painted="1"]) {
   background-color: #000000 !important;
   color-scheme: dark !important;
+}
+
+html:not([data-ar-dm="off"]):not([data-ar-dm-painted="1"]) body {
+  background-color: #000000 !important;
+  opacity: 0 !important;
+  animation: __arDmRevealFallback 0.01s linear 0.18s forwards !important;
 }

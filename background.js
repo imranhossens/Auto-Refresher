@@ -684,6 +684,18 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     })();
     return true;
   }
+
+  if (msg.type === 'darkmode-transform-css' && typeof msg.url === 'string') {
+    (async () => {
+      try {
+        const css = await fetchAndTransformExternalCss(msg.url, msg.isPureBlack !== false);
+        sendResponse({ ok: true, css });
+      } catch {
+        sendResponse({ ok: false, css: '' });
+      }
+    })();
+    return true;
+  }
 });
 
 async function scheduleJob(job) {
@@ -1480,6 +1492,276 @@ async function probeExternalImageKind(url) {
     const def = { kind: 'normal' };
     svgProbeCache.set(url, def);
     return def;
+  }
+}
+
+// ---- Proactive Cross-Origin CSS Stylesheet Transformer (0ms SPA & Webmail Dark Mode) ----
+const cssTransformCache = new Map();
+const CSS_NAMED_COLORS = {
+  white: { r: 255, g: 255, b: 255, a: 1 },
+  black: { r: 0, g: 0, b: 0, a: 1 },
+  snow: { r: 255, g: 250, b: 250, a: 1 },
+  ivory: { r: 255, g: 255, b: 240, a: 1 },
+  whitesmoke: { r: 245, g: 245, b: 245, a: 1 },
+  ghostwhite: { r: 248, g: 248, b: 255, a: 1 },
+  aliceblue: { r: 240, g: 248, b: 255, a: 1 },
+  gainsboro: { r: 220, g: 220, b: 220, a: 1 },
+  lightgray: { r: 211, g: 211, b: 211, a: 1 },
+  lightgrey: { r: 211, g: 211, b: 211, a: 1 },
+  silver: { r: 192, g: 192, b: 192, a: 1 },
+  darkgray: { r: 169, g: 169, b: 169, a: 1 },
+  gray: { r: 128, g: 128, b: 128, a: 1 },
+  grey: { r: 128, g: 128, b: 128, a: 1 },
+  dimgray: { r: 105, g: 105, b: 105, a: 1 },
+  dimgrey: { r: 105, g: 105, b: 105, a: 1 },
+  darkslategray: { r: 47, g: 79, b: 79, a: 1 },
+  darkslategrey: { r: 47, g: 79, b: 79, a: 1 }
+};
+
+function cssRgbToHsl(r, g, b) {
+  const rn = r / 255, gn = g / 255, bn = b / 255;
+  const max = Math.max(rn, gn, bn), min = Math.min(rn, gn, bn);
+  const d = max - min;
+  const l = (max + min) / 2;
+  const s = d === 0 ? 0 : d / (1 - Math.abs(2 * l - 1));
+  let h = 0;
+  if (d !== 0) {
+    if (max === rn) h = ((gn - bn) / d + (gn < bn ? 6 : 0)) * 60;
+    else if (max === gn) h = ((bn - rn) / d + 2) * 60;
+    else h = ((rn - gn) / d + 4) * 60;
+  }
+  return { h, s, l, chroma: d };
+}
+
+function cssHslToRgb(h, s, l) {
+  const c = (1 - Math.abs(2 * l - 1)) * s;
+  const x = c * (1 - Math.abs(((h / 60) % 2) - 1));
+  const m = l - c / 2;
+  let r1 = 0, g1 = 0, b1 = 0;
+  if (h < 60) { r1 = c; g1 = x; }
+  else if (h < 120) { r1 = x; g1 = c; }
+  else if (h < 180) { g1 = c; b1 = x; }
+  else if (h < 240) { g1 = x; b1 = c; }
+  else if (h < 300) { r1 = x; b1 = c; }
+  else { r1 = c; b1 = x; }
+  return {
+    r: Math.round((r1 + m) * 255),
+    g: Math.round((g1 + m) * 255),
+    b: Math.round((b1 + m) * 255)
+  };
+}
+
+function parseSingleCssColor(val) {
+  const s = String(val || '').trim().toLowerCase();
+  if (!s || s === 'none' || s === 'transparent' || s === 'inherit' || s === 'initial' || s === 'unset' || s === 'currentcolor' || s.includes('var(') || s.includes('url(') || s.includes('gradient(')) {
+    return null;
+  }
+  if (CSS_NAMED_COLORS[s]) return CSS_NAMED_COLORS[s];
+  if (s.startsWith('#')) return parseHexToRgba(s);
+  if (s.startsWith('rgb')) return parseRgbaString(s);
+  return null;
+}
+
+function formatCssRgba(r, g, b, a) {
+  return a >= 0.999 ? `rgb(${r},${g},${b})` : `rgba(${r},${g},${b},${Number(a.toFixed(3))})`;
+}
+
+function transformCssDeclarationBlock(decls, isPureBlack) {
+  const parts = decls.split(';');
+  let ruleHasKeptVibrantBg = false;
+  const parsed = [];
+
+  for (let i = 0; i < parts.length; i++) {
+    const raw = parts[i].trim();
+    if (!raw) continue;
+    const colonIdx = raw.indexOf(':');
+    if (colonIdx <= 0) continue;
+    const prop = raw.slice(0, colonIdx).trim().toLowerCase();
+    if (
+      prop !== 'background-color' &&
+      prop !== 'background' &&
+      prop !== 'color' &&
+      prop !== 'border-color' &&
+      prop !== 'border-top-color' &&
+      prop !== 'border-right-color' &&
+      prop !== 'border-bottom-color' &&
+      prop !== 'border-left-color'
+    ) {
+      continue;
+    }
+    let val = raw.slice(colonIdx + 1).trim();
+    const isImp = /!important\s*$/i.test(val);
+    if (isImp) val = val.replace(/!important\s*$/i, '').trim();
+    const rgba = parseSingleCssColor(val);
+    if (!rgba || rgba.a < 0.05) continue;
+
+    if (prop === 'background-color' || prop === 'background') {
+      const { l, chroma } = cssRgbToHsl(rgba.r, rgba.g, rgba.b);
+      if (chroma >= 0.14 && l <= 0.76) {
+        ruleHasKeptVibrantBg = true;
+        continue;
+      }
+      if (l <= 0.28) {
+        ruleHasKeptVibrantBg = true;
+        continue;
+      }
+    }
+    parsed.push({ prop, rgba, isImp });
+  }
+
+  const out = [];
+  for (const item of parsed) {
+    const { prop, rgba, isImp } = item;
+    const imp = isImp ? ' !important' : '';
+    const { h, s, l, chroma } = cssRgbToHsl(rgba.r, rgba.g, rgba.b);
+
+    if (prop === 'background-color' || prop === 'background') {
+      if (l > 0.72 && chroma >= 0.04) {
+        const targetL = isPureBlack ? 0.14 + (1 - l) * 0.28 : 0.16 + (1 - l) * 0.26;
+        const rgb = cssHslToRgb(h, Math.max(0.28, Math.min(0.60, s * 0.65)), Math.min(0.26, targetL));
+        out.push(`background-color:${formatCssRgba(rgb.r, rgb.g, rgb.b, rgba.a)}${imp}`);
+      } else if (l > 0.50 && chroma < 0.14) {
+        if (isPureBlack) {
+          if (l >= 0.82) {
+            out.push(`background-color:${formatCssRgba(0, 0, 0, rgba.a)}${imp}`);
+          } else {
+            const rgb = cssHslToRgb(225, 0.08, Math.min(0.12, 0.04 + (1 - l) * 0.15));
+            out.push(`background-color:${formatCssRgba(rgb.r, rgb.g, rgb.b, rgba.a)}${imp}`);
+          }
+        } else {
+          const rgb = cssHslToRgb(225, 0.08, Math.min(0.27, 0.085 + (1 - l) * 0.38));
+          out.push(`background-color:${formatCssRgba(rgb.r, rgb.g, rgb.b, rgba.a)}${imp}`);
+        }
+      }
+    } else if (prop === 'color') {
+      if (ruleHasKeptVibrantBg) continue;
+      if (chroma < 0.14 && l < 0.68) {
+        const targetL = Math.max(0.72, Math.min(0.95, 0.95 - l * 0.35));
+        const rgb = cssHslToRgb(220, 0.08, targetL);
+        out.push(`color:${formatCssRgba(rgb.r, rgb.g, rgb.b, rgba.a)}${imp}`);
+      }
+    } else if (prop.endsWith('color')) {
+      if (chroma < 0.14 && l > 0.55) {
+        const targetL = Math.max(0.18, Math.min(0.30, 0.20 + (1 - l) * 0.25));
+        const rgb = cssHslToRgb(225, 0.08, targetL);
+        out.push(`${prop}:${formatCssRgba(rgb.r, rgb.g, rgb.b, Math.min(rgba.a, 0.85))}${imp}`);
+      }
+    }
+  }
+  return out.join(';');
+}
+
+function buildDarkOverrideFromCssText(cssText, isPureBlack) {
+  if (!cssText || cssText.length > 650000) return '';
+  const cleaned = cssText.replace(/\/\*[\s\S]*?\*\//g, '');
+  const len = cleaned.length;
+  let pos = 0;
+
+  const parseBlock = (endPos) => {
+    const out = [];
+    while (pos < endPos) {
+      while (pos < endPos && (cleaned[pos] <= ' ' || cleaned[pos] === ';')) pos++;
+      if (pos >= endPos) break;
+      if (cleaned[pos] === '}') {
+        pos++;
+        break;
+      }
+
+      const start = pos;
+      let braceIdx = -1;
+      let semiIdx = -1;
+      let inStr = '';
+      while (pos < endPos) {
+        const ch = cleaned[pos];
+        if (inStr) {
+          if (ch === '\\') { pos += 2; continue; }
+          if (ch === inStr) inStr = '';
+        } else if (ch === '"' || ch === "'") {
+          inStr = ch;
+        } else if (ch === '{') {
+          braceIdx = pos;
+          pos++;
+          break;
+        } else if (ch === ';') {
+          semiIdx = pos;
+          pos++;
+          break;
+        } else if (ch === '}') {
+          break;
+        }
+        pos++;
+      }
+
+      if (semiIdx !== -1 || braceIdx === -1) continue;
+      const prelude = cleaned.slice(start, braceIdx).trim();
+
+      // Find matching closing brace for this block
+      const bodyStart = pos;
+      let depth = 1;
+      inStr = '';
+      while (pos < endPos && depth > 0) {
+        const ch = cleaned[pos];
+        if (inStr) {
+          if (ch === '\\') { pos += 2; continue; }
+          if (ch === inStr) inStr = '';
+        } else if (ch === '"' || ch === "'") {
+          inStr = ch;
+        } else if (ch === '{') {
+          depth++;
+        } else if (ch === '}') {
+          depth--;
+        }
+        pos++;
+      }
+      const bodyEnd = pos - 1;
+
+      if (!prelude) continue;
+      if (prelude.startsWith('@')) {
+        const lower = prelude.toLowerCase();
+        if (lower.startsWith('@media') || lower.startsWith('@supports') || lower.startsWith('@layer')) {
+          const savedPos = pos;
+          pos = bodyStart;
+          const inner = parseBlock(bodyEnd);
+          pos = savedPos;
+          if (inner) out.push(`${prelude}{${inner}}`);
+        }
+        continue;
+      }
+
+      const decls = cleaned.slice(bodyStart, bodyEnd);
+      const transformed = transformCssDeclarationBlock(decls, isPureBlack);
+      if (transformed) {
+        out.push(`${prelude}{${transformed}}`);
+      }
+    }
+    return out.join('');
+  };
+
+  return parseBlock(len);
+}
+
+async function fetchAndTransformExternalCss(url, isPureBlack) {
+  if (!/^https?:\/\//i.test(url)) return '';
+  const cacheKey = `${isPureBlack ? '1' : '0'}|${url}`;
+  if (cssTransformCache.has(cacheKey)) return cssTransformCache.get(cacheKey);
+
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 3500);
+    const res = await fetch(url, { signal: controller.signal });
+    clearTimeout(timer);
+    if (!res.ok) {
+      cssTransformCache.set(cacheKey, '');
+      return '';
+    }
+    const text = await res.text();
+    const transformed = buildDarkOverrideFromCssText(text, isPureBlack);
+    if (cssTransformCache.size > 120) cssTransformCache.clear();
+    cssTransformCache.set(cacheKey, transformed);
+    return transformed;
+  } catch {
+    cssTransformCache.set(cacheKey, '');
+    return '';
   }
 }
 
