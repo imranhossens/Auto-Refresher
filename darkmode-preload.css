@@ -1,0 +1,7 @@
+/* 0ms anti-flash pure solid black shield registered dynamically for Always On or enabled domains.
+   Dropped automatically as soon as darkmode.js initializes (data-ar-dm-ready="1"). */
+html:not([data-ar-dm="off"]):not([data-ar-dm-ready="1"]),
+body:not([data-ar-dm="off"]):not([data-ar-dm-ready="1"]) {
+  background-color: #000000 !important;
+  color-scheme: dark !important;
+}

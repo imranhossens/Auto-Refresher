@@ -2040,4 +2040,651 @@ function escapeHtml(str) {
 // Initialise Groups feature
 initGroups();
 
+// --- Dark Mode Feature Logic ---
+async function initDarkMode() {
+  const STORAGE_KEY = "darkModeConfig";
+  const DEFAULT_DM_CONFIG = {
+    enabled: false,
+    mode: "smart",
+    brightness: 100,
+    contrast: 100,
+    sepia: 0,
+    grayscale: 0,
+    dimImages: false,
+    skipNativeDark: true,
+    followSystem: false,
+    scheduleEnabled: false,
+    scheduleStart: "19:00",
+    scheduleEnd: "07:00",
+    shortcut: {
+      ctrlKey: false,
+      altKey: true,
+      shiftKey: true,
+      metaKey: false,
+      code: "KeyD",
+      key: "D",
+      label: "Alt+Shift+D"
+    },
+    siteRules: {},
+    pageRules: {}
+  };
+
+  const navDot = document.getElementById("nav-darkmode-dot");
+  const toggleEnabled = document.getElementById("dm-toggle-enabled");
+  const currentHostEl = document.getElementById("dm-current-host");
+  const currentPathEl = document.getElementById("dm-current-path");
+  const statusPill = document.getElementById("dm-status-pill");
+  const btnSiteToggle = document.getElementById("dm-btn-site-toggle");
+  const btnSiteLabel = document.getElementById("dm-btn-site-label");
+  const btnPageToggle = document.getElementById("dm-btn-page-toggle");
+  const btnPageLabel = document.getElementById("dm-btn-page-label");
+  const ruleFooter = document.getElementById("dm-rule-footer");
+  const ruleNote = document.getElementById("dm-rule-note");
+  const btnClearRule = document.getElementById("dm-btn-clear-rule");
+
+  const modeBtns = document.querySelectorAll("#dm-mode-segmented .seg-btn");
+  const shortcutBtn = document.getElementById("dm-shortcut-btn");
+  const shortcutHint = document.getElementById("dm-shortcut-hint");
+  const btnOpenChromeShortcuts = document.getElementById("dm-open-chrome-shortcuts");
+
+  const advHeader = document.getElementById("dm-advanced-header");
+  const advChevron = document.getElementById("dm-advanced-chevron");
+  const advDetails = document.getElementById("dm-advanced-details");
+  const btnResetFilters = document.getElementById("dm-btn-reset-filters");
+
+  const sliderBrightness = document.getElementById("dm-slider-brightness");
+  const sliderContrast = document.getElementById("dm-slider-contrast");
+  const sliderSepia = document.getElementById("dm-slider-sepia");
+  const sliderGrayscale = document.getElementById("dm-slider-grayscale");
+  const valBrightness = document.getElementById("dm-val-brightness");
+  const valContrast = document.getElementById("dm-val-contrast");
+  const valSepia = document.getElementById("dm-val-sepia");
+  const valGrayscale = document.getElementById("dm-val-grayscale");
+
+  const toggleSkipNative = document.getElementById("dm-toggle-skip-native");
+  const toggleDimImages = document.getElementById("dm-toggle-dim-images");
+  const toggleFollowSystem = document.getElementById("dm-toggle-follow-system");
+  const toggleSchedule = document.getElementById("dm-toggle-schedule");
+  const scheduleTimesWrap = document.getElementById("dm-schedule-times");
+  const scheduleStartInput = document.getElementById("dm-schedule-start");
+  const scheduleEndInput = document.getElementById("dm-schedule-end");
+
+  const rulesCountEl = document.getElementById("dm-rules-count");
+  const rulesListEl = document.getElementById("dm-rules-list");
+  const btnClearAllRules = document.getElementById("dm-btn-clear-all-rules");
+  const quickAddInput = document.getElementById("dm-quick-add-input");
+  const btnQuickAdd = document.getElementById("dm-btn-quick-add");
+
+  if (!toggleEnabled) return;
+
+  const DM_MULTI_PART_TLDS = new Set([
+    "co.uk", "org.uk", "ac.uk", "gov.uk", "me.uk",
+    "com.au", "net.au", "org.au", "edu.au",
+    "com.bd", "org.bd", "net.bd", "edu.bd", "gov.bd",
+    "co.jp", "ne.jp", "or.jp", "ac.jp",
+    "co.in", "net.in", "org.in", "ac.in",
+    "com.br", "com.mx", "com.cn", "com.sg", "com.hk", "com.tw", "co.nz", "co.za", "co.kr"
+  ]);
+
+  function getMainDomain(hostname) {
+    const clean = String(hostname || "").toLowerCase().replace(/^www\./, "");
+    if (!clean || /^(\d+\.){3}\d+$/.test(clean) || clean === "localhost" || !clean.includes(".")) {
+      return clean;
+    }
+    const parts = clean.split(".");
+    if (parts.length <= 2) return clean;
+    const lastTwo = parts.slice(-2).join(".");
+    if (DM_MULTI_PART_TLDS.has(lastTwo) && parts.length >= 3) {
+      return parts.slice(-3).join(".");
+    }
+    return lastTwo;
+  }
+
+  function findMatchingSiteRule(siteRules, host) {
+    if (!siteRules || !host) return null;
+    if (siteRules[host]) return { key: host, value: siteRules[host] };
+    const noWww = host.replace(/^www\./, "");
+    if (siteRules[noWww]) return { key: noWww, value: siteRules[noWww] };
+    const main = getMainDomain(host);
+    if (main && siteRules[main]) return { key: main, value: siteRules[main] };
+    return null;
+  }
+
+  let config = { ...DEFAULT_DM_CONFIG };
+  let activeTab = null;
+  let hostKey = "";
+  let mainDomain = "";
+  let pageKey = "";
+  let pagePath = "";
+  let isSupportedPage = false;
+  let isNativeDark = false;
+  let isRecordingShortcut = false;
+
+  async function loadConfig() {
+    const res = await chrome.storage.local.get(STORAGE_KEY);
+    const saved = res[STORAGE_KEY] || {};
+    config = {
+      ...DEFAULT_DM_CONFIG,
+      ...saved,
+      shortcut: { ...DEFAULT_DM_CONFIG.shortcut, ...(saved.shortcut || {}) },
+      siteRules: { ...(saved.siteRules || {}) },
+      pageRules: { ...(saved.pageRules || {}) }
+    };
+  }
+
+  async function saveConfig() {
+    await chrome.storage.local.set({ [STORAGE_KEY]: config });
+    // Ensure instant zero-refresh update on the active tab (even if opened before extension reload)
+    try {
+      chrome.runtime.sendMessage({
+        type: "darkmode-sync-active-tab",
+        tabId: activeTab ? activeTab.id : null
+      }).catch(() => {});
+    } catch {
+      // Ignore
+    }
+  }
+
+  async function detectCurrentTab() {
+    try {
+      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+      activeTab = tab || null;
+      if (tab && tab.url && /^https?:\/\//i.test(tab.url)) {
+        const parsed = new URL(tab.url);
+        hostKey = parsed.hostname.toLowerCase();
+        mainDomain = getMainDomain(hostKey) || hostKey;
+        let path = parsed.pathname || "/";
+        if (path.length > 1 && path.endsWith("/")) path = path.slice(0, -1);
+        pagePath = path;
+        pageKey = parsed.origin.toLowerCase() + path;
+        isSupportedPage = true;
+
+        try {
+          const state = await chrome.tabs.sendMessage(tab.id, { type: "darkmode-get-page-state" });
+          if (state && typeof state.isNativeDark === "boolean") {
+            isNativeDark = state.isNativeDark;
+          }
+        } catch {
+          // Content script may not have loaded yet on freshly opened tabs
+        }
+      } else {
+        isSupportedPage = false;
+        hostKey = "";
+        pageKey = "";
+        pagePath = "";
+      }
+    } catch {
+      isSupportedPage = false;
+    }
+  }
+
+  function isWithinSchedule(startStr, endStr) {
+    const parseMins = (s) => {
+      const [h, m] = String(s || "00:00").split(":").map(Number);
+      return (isNaN(h) ? 0 : h) * 60 + (isNaN(m) ? 0 : m);
+    };
+    const now = new Date();
+    const cur = now.getHours() * 60 + now.getMinutes();
+    const start = parseMins(startStr);
+    const end = parseMins(endStr);
+    if (start === end) return true;
+    return start < end ? cur >= start && cur < end : cur >= start || cur < end;
+  }
+
+  function computeEffectiveState() {
+    if (!config.enabled) return { active: false, source: "disabled" };
+    if (!isSupportedPage) return { active: false, source: "unsupported" };
+    if (pageKey && config.pageRules[pageKey]) {
+      return { active: config.pageRules[pageKey] === "on", source: "page" };
+    }
+    const matchedSite = findMatchingSiteRule(config.siteRules, hostKey);
+    if (matchedSite) {
+      return { active: matchedSite.value === "on", source: "site", matchedKey: matchedSite.key };
+    }
+    let globalActive = false;
+    if (config.followSystem && window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches) {
+      globalActive = true;
+    }
+    if (!globalActive && config.scheduleEnabled && isWithinSchedule(config.scheduleStart, config.scheduleEnd)) {
+      globalActive = true;
+    }
+    if (globalActive && config.skipNativeDark && isNativeDark) {
+      return { active: false, source: "native-dark" };
+    }
+    return { active: globalActive, source: globalActive ? "global" : "off" };
+  }
+
+  function renderUI() {
+    toggleEnabled.checked = Boolean(config.enabled);
+
+    // Mode buttons (map legacy 'amoled' to 'smart' Pure Black)
+    const activeMode = config.mode === "amoled" ? "smart" : (config.mode || "smart");
+    modeBtns.forEach((btn) => {
+      btn.classList.toggle("active", btn.dataset.dmMode === activeMode);
+    });
+
+    // Shortcut badge
+    if (!isRecordingShortcut) {
+      shortcutBtn.textContent = (config.shortcut && config.shortcut.label) || "Alt+Shift+D";
+      shortcutBtn.classList.remove("recording");
+      shortcutHint.textContent = "Click badge to change hotkey";
+    }
+
+    // Sliders
+    sliderBrightness.value = config.brightness;
+    sliderContrast.value = config.contrast;
+    sliderSepia.value = config.sepia;
+    sliderGrayscale.value = config.grayscale;
+    valBrightness.textContent = `${config.brightness}%`;
+    valContrast.textContent = `${config.contrast}%`;
+    valSepia.textContent = `${config.sepia}%`;
+    valGrayscale.textContent = `${config.grayscale}%`;
+
+    // Switches
+    toggleSkipNative.checked = config.skipNativeDark !== false;
+    toggleDimImages.checked = Boolean(config.dimImages);
+    toggleFollowSystem.checked = Boolean(config.followSystem);
+    toggleSchedule.checked = Boolean(config.scheduleEnabled);
+    scheduleTimesWrap.classList.toggle("hidden", !config.scheduleEnabled);
+    scheduleStartInput.value = config.scheduleStart || "19:00";
+    scheduleEndInput.value = config.scheduleEnd || "07:00";
+
+    // Current site / page status
+    const effective = computeEffectiveState();
+    if (navDot) {
+      navDot.classList.toggle("hidden", !config.enabled);
+    }
+
+    if (!config.enabled) {
+      currentHostEl.textContent = isSupportedPage ? mainDomain : "Dark Mode is Off";
+      currentPathEl.textContent = "Turn on Dark Mode above to convert pages with shortcut or list";
+      statusPill.textContent = "Off";
+      statusPill.className = "dm-status-pill";
+      btnSiteToggle.disabled = true;
+      btnPageToggle.disabled = true;
+      btnSiteToggle.className = "dm-primary-domain-btn";
+      btnPageToggle.className = "dm-scope-btn dm-scope-btn-subtle";
+      btnSiteLabel.textContent = isSupportedPage ? `+ Add ${mainDomain} to Dark Mode` : "Add Main Domain";
+      btnPageLabel.textContent = "Only This Page";
+      btnClearRule.classList.add("hidden");
+      ruleFooter.classList.add("hidden");
+    } else if (!isSupportedPage) {
+      currentHostEl.textContent = "Browser system page";
+      currentPathEl.textContent = "Dark Mode works on regular websites (http/https)";
+      statusPill.textContent = "Unavailable";
+      statusPill.className = "dm-status-pill";
+      btnSiteToggle.disabled = true;
+      btnPageToggle.disabled = true;
+      btnSiteToggle.className = "dm-primary-domain-btn";
+      btnPageToggle.className = "dm-scope-btn dm-scope-btn-subtle";
+      btnClearRule.classList.add("hidden");
+      ruleFooter.classList.add("hidden");
+    } else {
+      currentHostEl.textContent = mainDomain;
+      currentPathEl.textContent = hostKey !== mainDomain ? `All pages & subdomains (${hostKey})` : "Covers all pages on this domain";
+      btnSiteToggle.disabled = false;
+      btnPageToggle.disabled = false;
+
+      if (effective.source === "native-dark") {
+        statusPill.textContent = "Native Dark";
+        statusPill.className = "dm-status-pill is-native";
+      } else if (effective.active) {
+        statusPill.textContent = "Active";
+        statusPill.className = "dm-status-pill is-on";
+      } else {
+        statusPill.textContent = "Off";
+        statusPill.className = "dm-status-pill";
+      }
+
+      const matchedSite = findMatchingSiteRule(config.siteRules, hostKey);
+      const siteRule = matchedSite ? matchedSite.value : null;
+      const pageRule = config.pageRules[pageKey];
+
+      btnSiteToggle.className = "dm-primary-domain-btn";
+      btnPageToggle.className = "dm-scope-btn dm-scope-btn-subtle";
+
+      if (siteRule === "on") {
+        btnSiteToggle.classList.add("active-on");
+        btnSiteLabel.textContent = `Dark Mode ON for ${matchedSite.key}`;
+      } else if (siteRule === "off") {
+        btnSiteToggle.classList.add("active-off");
+        btnSiteLabel.textContent = `Excluded: ${matchedSite.key} (Click to Enable)`;
+      } else {
+        btnSiteLabel.textContent = effective.active ? `Exclude ${mainDomain}` : `+ Add ${mainDomain} to Dark Mode`;
+      }
+
+      if (pageRule === "on") {
+        btnPageToggle.classList.add("active-on");
+        btnPageLabel.textContent = "This Page: ON";
+      } else if (pageRule === "off") {
+        btnPageToggle.classList.add("active-off");
+        btnPageLabel.textContent = "This Page: OFF";
+      } else {
+        btnPageLabel.textContent = effective.active ? "Exclude Only This Page" : "Only This Page";
+      }
+
+      if (pageRule) {
+        btnClearRule.classList.remove("hidden");
+        ruleFooter.classList.remove("hidden");
+        ruleNote.textContent = `Specific page rule (${pageRule.toUpperCase()})`;
+      } else if (siteRule) {
+        btnClearRule.classList.remove("hidden");
+        ruleFooter.classList.remove("hidden");
+        ruleNote.textContent = `Saved for all pages on ${matchedSite.key} (${siteRule.toUpperCase()})`;
+      } else {
+        btnClearRule.classList.add("hidden");
+        ruleFooter.classList.add("hidden");
+      }
+    }
+
+    renderRulesList();
+  }
+
+  function renderRulesList() {
+    const entries = [];
+    for (const [key, val] of Object.entries(config.pageRules || {})) {
+      entries.push({ type: "page", key, val });
+    }
+    for (const [key, val] of Object.entries(config.siteRules || {})) {
+      entries.push({ type: "site", key, val });
+    }
+
+    rulesCountEl.textContent = String(entries.length);
+    btnClearAllRules.classList.toggle("hidden", entries.length === 0);
+    rulesListEl.innerHTML = "";
+
+    if (entries.length === 0) {
+      rulesListEl.innerHTML = `<li class="dm-rules-empty">No saved site or page overrides yet.</li>`;
+      return;
+    }
+
+    entries.forEach((entry) => {
+      const li = document.createElement("li");
+      li.className = "dm-rule-item";
+
+      const displayTarget = entry.type === "page" ? entry.key.replace(/^https?:\/\//i, "") : entry.key;
+
+      li.innerHTML = `
+        <div class="dm-rule-item-info">
+          <span class="dm-rule-item-target" title="${escapeHtml(entry.key)}">${escapeHtml(displayTarget)}</span>
+          <span class="dm-rule-item-type">${entry.type === "page" ? "Specific Page" : "Entire Site"}</span>
+        </div>
+        <div class="dm-rule-item-right">
+          <button type="button" class="dm-rule-state ${entry.val === "on" ? "on" : "off"}" title="Click to toggle ON / OFF">${entry.val === "on" ? "ON" : "OFF"}</button>
+          <button type="button" class="btn-icon-action btn-icon-danger" title="Remove rule">
+            <svg class="svg-icon" viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <polyline points="3 6 5 6 21 6"></polyline>
+              <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path>
+            </svg>
+          </button>
+        </div>
+      `;
+
+      const stateBtn = li.querySelector(".dm-rule-state");
+      stateBtn.addEventListener("click", async () => {
+        const nextVal = entry.val === "on" ? "off" : "on";
+        if (entry.type === "page") {
+          config.pageRules[entry.key] = nextVal;
+        } else {
+          config.siteRules[entry.key] = nextVal;
+        }
+        await saveConfig();
+        renderUI();
+      });
+
+      const delBtn = li.querySelector(".btn-icon-danger");
+      delBtn.addEventListener("click", async () => {
+        if (entry.type === "page") {
+          delete config.pageRules[entry.key];
+        } else {
+          delete config.siteRules[entry.key];
+        }
+        await saveConfig();
+        renderUI();
+      });
+
+      rulesListEl.appendChild(li);
+    });
+  }
+
+  // Event bindings
+  toggleEnabled.addEventListener("change", async () => {
+    config.enabled = toggleEnabled.checked;
+    delete config.alwaysOn;
+    await saveConfig();
+    renderUI();
+  });
+
+  btnSiteToggle.addEventListener("click", async () => {
+    if (!isSupportedPage || !mainDomain) return;
+    const effective = computeEffectiveState();
+    // Clear page-specific override if user toggles the main domain
+    if (pageKey && config.pageRules[pageKey]) {
+      delete config.pageRules[pageKey];
+    }
+    const matched = findMatchingSiteRule(config.siteRules, hostKey);
+    const targetDomain = matched ? matched.key : mainDomain;
+    config.siteRules[targetDomain] = effective.active ? "off" : "on";
+    await saveConfig();
+    renderUI();
+  });
+
+  btnPageToggle.addEventListener("click", async () => {
+    if (!isSupportedPage || !pageKey) return;
+    const effective = computeEffectiveState();
+    config.pageRules[pageKey] = effective.active ? "off" : "on";
+    await saveConfig();
+    renderUI();
+  });
+
+  btnClearRule.addEventListener("click", async () => {
+    if (pageKey && config.pageRules[pageKey]) {
+      delete config.pageRules[pageKey];
+    } else {
+      const matched = findMatchingSiteRule(config.siteRules, hostKey);
+      if (matched) delete config.siteRules[matched.key];
+    }
+    await saveConfig();
+    renderUI();
+  });
+
+  btnClearAllRules.addEventListener("click", async () => {
+    config.siteRules = {};
+    config.pageRules = {};
+    await saveConfig();
+    renderUI();
+  });
+
+  async function handleQuickAdd() {
+    if (!quickAddInput) return;
+    const raw = quickAddInput.value.trim();
+    if (!raw) return;
+
+    try {
+      const normalized = /^https?:\/\//i.test(raw) ? raw : `https://${raw}`;
+      const parsed = new URL(normalized);
+      const domain = getMainDomain(parsed.hostname);
+      if (!domain || !domain.includes(".")) return;
+
+      // Always add the main domain so all pages and subdomains are covered automatically
+      config.siteRules[domain] = "on";
+
+      quickAddInput.value = "";
+      await saveConfig();
+      renderUI();
+
+      if (btnQuickAdd) {
+        const origText = btnQuickAdd.textContent;
+        btnQuickAdd.textContent = "✓ Added!";
+        btnQuickAdd.style.color = "#2ed573";
+        setTimeout(() => {
+          btnQuickAdd.textContent = origText;
+          btnQuickAdd.style.color = "";
+        }, 1000);
+      }
+    } catch {
+      // Invalid URL format
+    }
+  }
+
+  if (btnQuickAdd) {
+    btnQuickAdd.addEventListener("click", handleQuickAdd);
+  }
+  if (quickAddInput) {
+    quickAddInput.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        handleQuickAdd();
+      }
+    });
+  }
+
+  modeBtns.forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      config.mode = btn.dataset.dmMode || "smart";
+      await saveConfig();
+      renderUI();
+    });
+  });
+
+  // Shortcut Recorder
+  function formatKeyLabel(e) {
+    const parts = [];
+    if (e.ctrlKey) parts.push("Ctrl");
+    if (e.altKey) parts.push("Alt");
+    if (e.shiftKey) parts.push("Shift");
+    if (e.metaKey) parts.push("Cmd");
+
+    let keyName = e.code || e.key;
+    if (keyName.startsWith("Key")) keyName = keyName.slice(3);
+    else if (keyName.startsWith("Digit")) keyName = keyName.slice(5);
+    parts.push(keyName);
+    return parts.join("+");
+  }
+
+  shortcutBtn.addEventListener("click", () => {
+    isRecordingShortcut = !isRecordingShortcut;
+    if (isRecordingShortcut) {
+      shortcutBtn.textContent = "Press keys...";
+      shortcutBtn.classList.add("recording");
+      shortcutHint.textContent = "Use Alt/Ctrl/Cmd + key (Esc to cancel)";
+    } else {
+      renderUI();
+    }
+  });
+
+  document.addEventListener("keydown", async (e) => {
+    if (!isRecordingShortcut) return;
+    e.preventDefault();
+    e.stopPropagation();
+
+    if (e.key === "Escape") {
+      isRecordingShortcut = false;
+      renderUI();
+      return;
+    }
+
+    // Ignore lone modifier presses
+    if (["Control", "Alt", "Shift", "Meta"].includes(e.key)) {
+      return;
+    }
+
+    // Require at least one modifier key (Alt, Ctrl, or Meta) so normal typing isn't intercepted
+    if (!e.ctrlKey && !e.altKey && !e.metaKey) {
+      shortcutHint.textContent = "Include Alt, Ctrl, or Cmd with your key";
+      return;
+    }
+
+    config.shortcut = {
+      ctrlKey: e.ctrlKey,
+      altKey: e.altKey,
+      shiftKey: e.shiftKey,
+      metaKey: e.metaKey,
+      code: e.code,
+      key: e.key.toUpperCase(),
+      label: formatKeyLabel(e)
+    };
+    isRecordingShortcut = false;
+    await saveConfig();
+    renderUI();
+  }, true);
+
+  btnOpenChromeShortcuts.addEventListener("click", () => {
+    chrome.tabs.create({ url: "chrome://extensions/shortcuts" });
+  });
+
+  // Collapsible Fine-Tune & Automation panel
+  advHeader.addEventListener("click", (e) => {
+    if (e.target.closest("button")) return;
+    const isHidden = advDetails.classList.contains("hidden");
+    advDetails.classList.toggle("hidden", !isHidden);
+    advChevron.style.transform = isHidden ? "rotate(180deg)" : "rotate(0deg)";
+  });
+
+  btnResetFilters.addEventListener("click", async (e) => {
+    e.stopPropagation();
+    config.brightness = 100;
+    config.contrast = 100;
+    config.sepia = 0;
+    config.grayscale = 0;
+    config.mode = "smart";
+    await saveConfig();
+    renderUI();
+  });
+
+  const bindSlider = (el, key, labelEl) => {
+    el.addEventListener("input", async () => {
+      config[key] = Number(el.value);
+      labelEl.textContent = `${config[key]}%`;
+      await saveConfig();
+    });
+  };
+  bindSlider(sliderBrightness, "brightness", valBrightness);
+  bindSlider(sliderContrast, "contrast", valContrast);
+  bindSlider(sliderSepia, "sepia", valSepia);
+  bindSlider(sliderGrayscale, "grayscale", valGrayscale);
+
+  toggleSkipNative.addEventListener("change", async () => {
+    config.skipNativeDark = toggleSkipNative.checked;
+    await saveConfig();
+    renderUI();
+  });
+
+  toggleDimImages.addEventListener("change", async () => {
+    config.dimImages = toggleDimImages.checked;
+    await saveConfig();
+  });
+
+  toggleFollowSystem.addEventListener("change", async () => {
+    config.followSystem = toggleFollowSystem.checked;
+    await saveConfig();
+    renderUI();
+  });
+
+  toggleSchedule.addEventListener("change", async () => {
+    config.scheduleEnabled = toggleSchedule.checked;
+    await saveConfig();
+    renderUI();
+  });
+
+  scheduleStartInput.addEventListener("change", async () => {
+    config.scheduleStart = scheduleStartInput.value || "19:00";
+    await saveConfig();
+    renderUI();
+  });
+
+  scheduleEndInput.addEventListener("change", async () => {
+    config.scheduleEnd = scheduleEndInput.value || "07:00";
+    await saveConfig();
+    renderUI();
+  });
+
+  await loadConfig();
+  await detectCurrentTab();
+  renderUI();
+}
+
+initDarkMode();
+
+
 

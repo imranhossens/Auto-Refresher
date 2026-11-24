@@ -25,6 +25,9 @@
       <button type="button" class="tab-nav-btn" data-tab="tab-groups">
         Groups <span id="nav-groups-count" class="nav-badge hidden">0</span>
       </button>
+      <button type="button" class="tab-nav-btn" data-tab="tab-dark-mode">
+        Dark Mode <span id="nav-darkmode-dot" class="dm-nav-dot hidden"></span>
+      </button>
     </div>
 
     <!-- Tab 1: Auto Refresh Section -->
@@ -44,11 +47,11 @@
         <label for="urls">Page URL(s)</label>
         <textarea id="urls" rows="2" placeholder="https://example.com/page" required></textarea>
 
-        <label>Refresh mode</label>
+        <label>How to refresh</label>
         <div class="segmented" id="mode-segmented" role="tablist">
-          <button type="button" class="seg-btn active" data-mode="interval">Interval</button>
-          <button type="button" class="seg-btn" data-mode="specific">Specific time</button>
-          <button type="button" class="seg-btn" data-mode="random">Random</button>
+          <button type="button" class="seg-btn active" data-mode="interval">Repeat timer</button>
+          <button type="button" class="seg-btn" data-mode="specific">Daily at time</button>
+          <button type="button" class="seg-btn" data-mode="random">Random time</button>
         </div>
         <input type="hidden" id="mode" value="interval" />
 
@@ -407,6 +410,224 @@
 
       <!-- Groups List Container -->
       <div id="groups-container" class="groups-list"></div>
+    </div>
+
+    <!-- Tab 4: Dark Mode Section -->
+    <div id="tab-dark-mode" class="tab-content hidden">
+      <div class="card dm-main-card">
+        <!-- Dark Mode Master Toggle -->
+        <div class="dm-master-row">
+          <div class="dm-master-info">
+            <span class="dm-master-title">
+              <svg class="svg-icon" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"></path>
+              </svg>
+              Dark Mode
+            </span>
+            <span class="dm-master-sub">Turn on to darken your saved domains &amp; use shortcut</span>
+          </div>
+          <label class="switch">
+            <input type="checkbox" id="dm-toggle-enabled" />
+            <span class="switch-track"></span>
+          </label>
+        </div>
+
+        <!-- Current Domain & Page Control (1-Click Frictionless) -->
+        <div class="panel dm-site-panel" id="dm-current-panel">
+          <div class="dm-site-header">
+            <div class="dm-site-meta">
+              <span id="dm-current-host" class="dm-site-host">Detecting domain...</span>
+              <span id="dm-current-path" class="dm-site-path"></span>
+            </div>
+            <span id="dm-status-pill" class="dm-status-pill">Off</span>
+          </div>
+
+          <button type="button" id="dm-btn-site-toggle" class="dm-primary-domain-btn">
+            <svg class="svg-icon" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="12" cy="12" r="10"></circle>
+              <line x1="2" y1="12" x2="22" y2="12"></line>
+              <path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"></path>
+            </svg>
+            <span id="dm-btn-site-label">Add Main Domain</span>
+          </button>
+
+          <div class="dm-secondary-scope-row" id="dm-scope-actions">
+            <button type="button" id="dm-btn-page-toggle" class="dm-scope-btn dm-scope-btn-subtle">
+              <svg class="svg-icon" viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+                <polyline points="14 2 14 8 20 8"></polyline>
+              </svg>
+              <span id="dm-btn-page-label">Only This Page</span>
+            </button>
+            <button type="button" id="dm-btn-clear-rule" class="dm-scope-btn dm-scope-btn-subtle hidden">
+              Reset to Auto
+            </button>
+          </div>
+
+          <div id="dm-rule-footer" class="dm-rule-footer hidden">
+            <span id="dm-rule-note" class="dm-rule-note"></span>
+          </div>
+        </div>
+
+        <!-- Theme Engine Mode -->
+        <div class="dm-mode-block">
+          <label>Color Visibility Mode</label>
+          <div class="segmented" id="dm-mode-segmented" role="tablist">
+            <button type="button" class="seg-btn active" data-dm-mode="smart">Pure Black</button>
+            <button type="button" class="seg-btn" data-dm-mode="charcoal">Charcoal</button>
+            <button type="button" class="seg-btn" data-dm-mode="dim">Soft Dim</button>
+          </div>
+        </div>
+
+        <!-- Customizable Shortcut Row -->
+        <div class="panel dm-shortcut-panel">
+          <div class="dm-shortcut-row">
+            <div class="dm-shortcut-info">
+              <span class="dm-shortcut-label">
+                <svg class="svg-icon" viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <rect x="2" y="4" width="20" height="16" rx="2" ry="2"></rect>
+                  <line x1="6" y1="8" x2="6" y2="8"></line>
+                  <line x1="10" y1="8" x2="10" y2="8"></line>
+                  <line x1="14" y1="8" x2="14" y2="8"></line>
+                  <line x1="18" y1="8" x2="18" y2="8"></line>
+                  <line x1="7" y1="16" x2="17" y2="16"></line>
+                </svg>
+                Instant Toggle Shortcut
+              </span>
+              <span class="dm-shortcut-hint" id="dm-shortcut-hint">Click badge to change hotkey</span>
+            </div>
+            <div class="dm-shortcut-controls">
+              <button type="button" id="dm-shortcut-btn" class="dm-shortcut-badge" title="Click to record a new keyboard shortcut">Alt+Shift+D</button>
+              <button type="button" id="dm-open-chrome-shortcuts" class="gear-btn-modern" title="Open browser global shortcuts settings">
+                <svg class="gear-icon" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <circle cx="12" cy="12" r="3"></circle>
+                  <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+                </svg>
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Specific Sites & Pages Quick List Card (works even without Always On) -->
+      <div class="card dm-sites-card">
+        <div class="dm-rules-header">
+          <label>
+            <svg class="svg-icon" viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path>
+              <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path>
+            </svg>
+            Dark Mode Sites &amp; Pages (<span id="dm-rules-count">0</span>)
+          </label>
+          <button type="button" id="dm-btn-clear-all-rules" class="link-btn hidden">Clear all</button>
+        </div>
+
+        <div class="dm-quick-add-row">
+          <input type="text" id="dm-quick-add-input" placeholder="Paste any link or domain (auto-uses main domain)..." />
+          <button type="button" id="dm-btn-quick-add" class="secondary-btn-sm">+ Add</button>
+        </div>
+        <div class="dm-quick-add-hint">Any pasted URL automatically adds its main domain (all pages &amp; subdomains).</div>
+
+        <ul id="dm-rules-list" class="dm-rules-list"></ul>
+      </div>
+
+      <!-- Collapsible Fine-Tune & Automation Card -->
+      <div class="card dm-advanced-card">
+        <h3 id="dm-advanced-header" class="sync-header">
+          <span class="sync-header-title">
+            <svg class="chevron-icon" id="dm-advanced-chevron" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+              <polyline points="6 9 12 15 18 9"></polyline>
+            </svg>
+            Fine-Tune &amp; Automation
+          </span>
+          <button type="button" id="dm-btn-reset-filters" class="link-btn">Reset</button>
+        </h3>
+
+        <div id="dm-advanced-details" class="dm-advanced-details hidden">
+          <!-- Sliders -->
+          <div class="dm-sliders-group">
+            <div class="dm-slider-row">
+              <div class="dm-slider-label">
+                <span>Brightness</span>
+                <span id="dm-val-brightness" class="dm-slider-val">100%</span>
+              </div>
+              <input type="range" id="dm-slider-brightness" class="dm-range" min="50" max="150" value="100" />
+            </div>
+
+            <div class="dm-slider-row">
+              <div class="dm-slider-label">
+                <span>Contrast</span>
+                <span id="dm-val-contrast" class="dm-slider-val">100%</span>
+              </div>
+              <input type="range" id="dm-slider-contrast" class="dm-range" min="50" max="150" value="100" />
+            </div>
+
+            <div class="dm-slider-row">
+              <div class="dm-slider-label">
+                <span>Warmth (Blue Light)</span>
+                <span id="dm-val-sepia" class="dm-slider-val">0%</span>
+              </div>
+              <input type="range" id="dm-slider-sepia" class="dm-range" min="0" max="60" value="0" />
+            </div>
+
+            <div class="dm-slider-row">
+              <div class="dm-slider-label">
+                <span>Grayscale</span>
+                <span id="dm-val-grayscale" class="dm-slider-val">0%</span>
+              </div>
+              <input type="range" id="dm-slider-grayscale" class="dm-range" min="0" max="100" value="0" />
+            </div>
+          </div>
+
+          <hr class="divider" />
+
+          <!-- Smart Switches -->
+          <div class="dm-switches-list">
+            <div class="control-row">
+              <label for="dm-toggle-skip-native" class="toggle-label">Skip already-dark sites</label>
+              <label class="switch">
+                <input type="checkbox" id="dm-toggle-skip-native" checked />
+                <span class="switch-track"></span>
+              </label>
+            </div>
+
+            <div class="control-row">
+              <label for="dm-toggle-dim-images" class="toggle-label">Gently dim bright photos</label>
+              <label class="switch">
+                <input type="checkbox" id="dm-toggle-dim-images" />
+                <span class="switch-track"></span>
+              </label>
+            </div>
+
+            <div class="control-row">
+              <label for="dm-toggle-follow-system" class="toggle-label">Follow system Dark Mode</label>
+              <label class="switch">
+                <input type="checkbox" id="dm-toggle-follow-system" />
+                <span class="switch-track"></span>
+              </label>
+            </div>
+
+            <div class="control-row">
+              <label for="dm-toggle-schedule" class="toggle-label">Auto schedule (night hours)</label>
+              <label class="switch">
+                <input type="checkbox" id="dm-toggle-schedule" />
+                <span class="switch-track"></span>
+              </label>
+            </div>
+
+            <div id="dm-schedule-times" class="dm-schedule-times hidden">
+              <div class="field">
+                <label for="dm-schedule-start">Start</label>
+                <input type="time" id="dm-schedule-start" value="19:00" />
+              </div>
+              <div class="field">
+                <label for="dm-schedule-end">End</label>
+                <input type="time" id="dm-schedule-end" value="07:00" />
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
     </div>
 
     <!-- Shared clock popover -->

@@ -619,6 +619,71 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     })();
     return true;
   }
+
+  if (msg.type === 'darkmode-sync-active-tab') {
+    (async () => {
+      try {
+        await syncDarkModePreloadScript();
+        const tabs = await chrome.tabs.query({});
+        await Promise.allSettled(
+          tabs
+            .filter((t) => t && t.id && t.url && /^https?:\/\//i.test(t.url))
+            .map((t) => ensureDarkModeOnTab(t.id, false))
+        );
+        sendResponse({ ok: true });
+      } catch {
+        sendResponse({ ok: false });
+      }
+    })();
+    return true;
+  }
+
+  if (msg.type === 'darkmode-toggle-shortcut') {
+    (async () => {
+      try {
+        let tabId = sender && sender.tab ? sender.tab.id : null;
+        let tabUrl = sender && sender.tab ? sender.tab.url : null;
+        if (!tabId) {
+          const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
+          tabId = activeTab ? activeTab.id : null;
+          tabUrl = activeTab ? activeTab.url : null;
+        }
+        if (tabId && tabUrl && /^https?:\/\//i.test(tabUrl)) {
+          const res = await toggleDarkModeForTab(tabId, tabUrl);
+          sendResponse({ ok: true, active: res.active, domain: res.domain });
+        } else {
+          sendResponse({ ok: false });
+        }
+      } catch (err) {
+        sendResponse({ ok: false, error: err.message });
+      }
+    })();
+    return true;
+  }
+
+  if (msg.type === 'darkmode-probe-image' && typeof msg.url === 'string') {
+    (async () => {
+      try {
+        const res = await probeExternalImageKind(msg.url);
+        sendResponse(res);
+      } catch {
+        sendResponse({ kind: 'normal' });
+      }
+    })();
+    return true;
+  }
+
+  if (msg.type === 'darkmode-probe-svg' && typeof msg.url === 'string') {
+    (async () => {
+      try {
+        const res = await probeExternalImageKind(msg.url);
+        sendResponse({ kind: res.kind, dataUri: res.dataUri, isDarkMono: res.kind === 'dark-mono' });
+      } catch {
+        sendResponse({ kind: 'normal', isDarkMono: false });
+      }
+    })();
+    return true;
+  }
 });
 
 async function scheduleJob(job) {
@@ -962,7 +1027,9 @@ const CONTEXT_MENUS = [
   { id: 'separator-1', type: 'separator', contexts: ['action', 'page'] },
   { id: 'set-specific-url', title: 'Set Page as Specific Reload Link', contexts: ['action', 'page'] },
   { id: 'separator-2', type: 'separator', contexts: ['action'] },
-  { id: 'options', title: 'Configure Action Settings...', contexts: ['action'] }
+  { id: 'options', title: 'Configure Action Settings...', contexts: ['action'] },
+  { id: 'darkmode-toggle-page', title: 'Toggle Dark Mode for This Domain', contexts: ['page'] },
+  { id: 'darkmode-add-link', title: 'Add Main Domain to Dark Mode', contexts: ['link'] }
 ];
 
 function createContextMenus() {
@@ -999,6 +1066,39 @@ chrome.action.onClicked.addListener(async () => {
 chrome.contextMenus.onClicked.addListener(async (info, tab) => {
   if (info.menuItemId === 'options') {
     chrome.runtime.openOptionsPage();
+    return;
+  }
+
+  if (info.menuItemId === 'darkmode-toggle-page') {
+    const targetTab = tab || (await chrome.tabs.query({ active: true, currentWindow: true }))[0];
+    if (targetTab && targetTab.id && targetTab.url) {
+      await toggleDarkModeForTab(targetTab.id, targetTab.url);
+    }
+    return;
+  }
+
+  if (info.menuItemId === 'darkmode-add-link' && info.linkUrl) {
+    try {
+      const parsed = new URL(info.linkUrl);
+      if (parsed.protocol === 'http:' || parsed.protocol === 'https:') {
+        const domain = extractMainDomain(parsed.hostname);
+        const { darkModeConfig = {} } = await chrome.storage.local.get('darkModeConfig');
+        const nextConfig = {
+          ...darkModeConfig,
+          siteRules: { ...(darkModeConfig.siteRules || {}), [domain]: 'on' }
+        };
+        await chrome.storage.local.set({ darkModeConfig: nextConfig });
+        const targetTab = tab || (await chrome.tabs.query({ active: true, currentWindow: true }))[0];
+        if (targetTab && targetTab.id) {
+          chrome.tabs.sendMessage(targetTab.id, {
+            type: 'darkmode-show-toast',
+            message: `Dark Mode added for ${domain}`
+          }).catch(() => {});
+        }
+      }
+    } catch {
+      // Ignore non-HTTP links
+    }
     return;
   }
 
@@ -1072,8 +1172,385 @@ chrome.commands.onCommand.addListener(async (command) => {
     case 'reload-others':
       await performReload('others', bypassCache);
       break;
+    case 'toggle-dark-mode': {
+      const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
+      if (activeTab && activeTab.id && activeTab.url) {
+        await toggleDarkModeForTab(activeTab.id, activeTab.url);
+      }
+      break;
+    }
   }
 });
+
+async function toggleDarkModeForTab(tabId, tabUrl) {
+  try {
+    const parsed = new URL(tabUrl);
+    const domain = extractMainDomain(parsed.hostname) || parsed.hostname.toLowerCase();
+    const { darkModeConfig = {} } = await chrome.storage.local.get('darkModeConfig');
+    if (!darkModeConfig.enabled) {
+      return { active: false, domain };
+    }
+    const siteRules = { ...(darkModeConfig.siteRules || {}) };
+    const pageRules = { ...(darkModeConfig.pageRules || {}) };
+
+    let path = parsed.pathname || '/';
+    if (path.length > 1 && path.endsWith('/')) path = path.slice(0, -1);
+    const pageKey = parsed.origin.toLowerCase() + path;
+
+    let currentOn = false;
+    if (pageKey in pageRules) {
+      currentOn = pageRules[pageKey] === 'on';
+      delete pageRules[pageKey];
+    } else if (domain in siteRules) {
+      currentOn = siteRules[domain] === 'on';
+    } else if (parsed.hostname.toLowerCase() in siteRules) {
+      currentOn = siteRules[parsed.hostname.toLowerCase()] === 'on';
+    }
+
+    const nextActive = !currentOn;
+    siteRules[domain] = nextActive ? 'on' : 'off';
+
+    const nextConfig = {
+      ...darkModeConfig,
+      siteRules,
+      pageRules
+    };
+
+    await chrome.storage.local.set({ darkModeConfig: nextConfig });
+    await syncDarkModePreloadScript();
+
+    // Make sure content script is active on tab
+    await ensureDarkModeOnTab(tabId, false);
+
+    // Notify all frames in the tab of the updated state with toast
+    chrome.tabs.sendMessage(tabId, {
+      type: 'darkmode-show-toast',
+      message: nextActive ? `Dark Mode: ON (${domain})` : `Dark Mode: OFF (${domain})`
+    }).catch(() => {});
+    chrome.tabs.sendMessage(tabId, {
+      type: 'darkmode-force-sync'
+    }).catch(() => {});
+
+    return { active: nextActive, domain };
+  } catch (err) {
+    console.warn('[darkmode] toggleDarkModeForTab failed:', err);
+    return { active: false, domain: '' };
+  }
+}
+
+// ---- Dark Mode Helpers: Instant Tab Injection & Cross-Origin SVG Icon Probe ----
+const svgProbeCache = new Map();
+
+async function ensureDarkModeOnTab(tabId, shouldToggle = false) {
+  try {
+    const tab = await chrome.tabs.get(tabId);
+    if (!tab || !tab.url || !/^https?:\/\//i.test(tab.url)) return;
+
+    try {
+      const res = await chrome.tabs.sendMessage(tabId, {
+        type: shouldToggle ? 'darkmode-toggle-shortcut' : 'darkmode-force-sync'
+      });
+      if (res && res.ok) return;
+    } catch {
+      // Tab was already open before install/reload; inject darkmode.js immediately so no refresh is needed
+    }
+
+    await chrome.scripting.executeScript({
+      target: { tabId, allFrames: true },
+      files: ['darkmode.js']
+    });
+
+    if (shouldToggle) {
+      await chrome.tabs.sendMessage(tabId, { type: 'darkmode-toggle-shortcut' }).catch(() => {});
+    }
+  } catch {
+    // Restricted or closed tab
+  }
+}
+
+function parseHexToRgba(hex) {
+  if (!hex || typeof hex !== 'string') return null;
+  let h = hex.trim();
+  if (!h.startsWith('#')) return null;
+  h = h.slice(1);
+  if (h.length === 3) h = h[0] + h[0] + h[1] + h[1] + h[2] + h[2];
+  if (h.length === 4) h = h[0] + h[0] + h[1] + h[1] + h[2] + h[2] + h[3] + h[3];
+  if (h.length !== 6 && h.length !== 8) return null;
+  const r = parseInt(h.slice(0, 2), 16);
+  const g = parseInt(h.slice(2, 4), 16);
+  const b = parseInt(h.slice(4, 6), 16);
+  const a = h.length === 8 ? parseInt(h.slice(6, 8), 16) / 255 : 1;
+  return { r, g, b, a };
+}
+
+function parseRgbaString(str) {
+  if (!str || typeof str !== 'string') return null;
+  const m = str.match(/rgba?\(\s*([\d.]+)[,\s]+([\d.]+)[,\s]+([\d.]+)(?:[\s,/]+([\d.]+%?))?\s*\)/i);
+  if (!m) return null;
+  const r = Math.max(0, Math.min(255, parseFloat(m[1])));
+  const g = Math.max(0, Math.min(255, parseFloat(m[2])));
+  const b = Math.max(0, Math.min(255, parseFloat(m[3])));
+  let a = 1;
+  if (m[4] !== undefined) {
+    a = m[4].endsWith('%') ? parseFloat(m[4]) / 100 : parseFloat(m[4]);
+  }
+  return { r, g, b, a };
+}
+
+function transformSvgMarkupColors(text) {
+  if (!text || !text.includes('<svg')) return null;
+
+  // 1. Neutralize blend modes that turn black over dark backgrounds
+  let transformed = text.replace(/mix-blend-mode\s*:\s*(multiply|darken|color-burn)/gi, 'mix-blend-mode: normal');
+
+  let hasColor = false;
+  let hasDarkNeutral = false;
+  let hasSemiAlphaDark = false;
+
+  const inspectColor = (r, g, b, a = 1) => {
+    const rn = r / 255, gn = g / 255, bn = b / 255;
+    const max = Math.max(rn, gn, bn), min = Math.min(rn, gn, bn);
+    const l = (max + min) / 2;
+    const chroma = max - min;
+    if (a < 0.55 && l < 0.55) {
+      hasSemiAlphaDark = true;
+    } else if (chroma >= 0.15) {
+      hasColor = true;
+    } else if (l < 0.55) {
+      hasDarkNeutral = true;
+    }
+  };
+
+  // 2. Transform dark neutral fills and strokes to crisp light #E8EAED
+  // while preserving vibrant colored fills (e.g. Google yellow/blue/green/red) 100% untouched!
+  transformed = transformed.replace(/(fill|stroke)\s*=\s*["']([^"']+)["']/gi, (match, attr, val) => {
+    const trimmed = val.trim();
+    if (!trimmed || trimmed === 'none' || trimmed.startsWith('url(')) return match;
+    const rgba = parseHexToRgba(trimmed) || parseRgbaString(trimmed);
+    if (!rgba || rgba.a < 0.05) return match;
+    inspectColor(rgba.r, rgba.g, rgba.b, rgba.a);
+    const rn = rgba.r / 255, gn = rgba.g / 255, bn = rgba.b / 255;
+    const max = Math.max(rn, gn, bn), min = Math.min(rn, gn, bn);
+    const l = (max + min) / 2;
+    const chroma = max - min;
+    if (chroma < 0.15 && l < 0.55) {
+      return `${attr}="#E8EAED"`;
+    }
+    return match;
+  });
+
+  // 3. Transform CSS style declarations inside <style> tags or inline style=""
+  transformed = transformed.replace(/(fill|stroke)\s*:\s*([^;"]+)/gi, (match, prop, val) => {
+    const trimmed = val.trim();
+    if (!trimmed || trimmed === 'none' || trimmed.startsWith('url(')) return match;
+    const rgba = parseHexToRgba(trimmed) || parseRgbaString(trimmed);
+    if (!rgba || rgba.a < 0.05) return match;
+    inspectColor(rgba.r, rgba.g, rgba.b, rgba.a);
+    const rn = rgba.r / 255, gn = rgba.g / 255, bn = rgba.b / 255;
+    const max = Math.max(rn, gn, bn), min = Math.min(rn, gn, bn);
+    const l = (max + min) / 2;
+    const chroma = max - min;
+    if (chroma < 0.15 && l < 0.55) {
+      return `${prop}: #E8EAED`;
+    }
+    return match;
+  });
+
+  // 4. Boost low-opacity dark/slate shapes (e.g. Google Material illustrations with fill-opacity="0.08")
+  transformed = transformed.replace(/(fill-opacity|stroke-opacity|opacity)\s*=\s*["']0?\.(0\d|[1-4]\d?)["']/gi, (m, attr) => {
+    hasSemiAlphaDark = true;
+    return `${attr}="0.45"`;
+  });
+
+  // If the SVG contains dark neutral text/lines alongside colors, or semi-alpha shapes:
+  if (hasDarkNeutral || hasSemiAlphaDark || (hasColor && transformed !== text)) {
+    const dataUri = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(transformed);
+    return { kind: 'svg-transformed', dataUri };
+  }
+
+  // Pure dark monochrome SVG without colors
+  if (!hasColor && (hasDarkNeutral || /<(path|circle|rect|polygon|text)\b/i.test(text))) {
+    return { kind: 'dark-mono' };
+  }
+
+  return { kind: 'normal' };
+}
+
+function classifyRgbaPixels(data, totalPixels) {
+  let transparentCount = 0;
+  let visibleCount = 0;
+  let semiAlphaDarkCount = 0;
+  let opaqueDarkCount = 0;
+  let colorCount = 0;
+  let brightNeutralCount = 0;
+
+  for (let i = 0; i < data.length; i += 4) {
+    const a = data[i + 3];
+    if (a < 6) {
+      transparentCount++;
+      continue;
+    }
+    visibleCount++;
+    const rn = data[i] / 255, gn = data[i + 1] / 255, bn = data[i + 2] / 255;
+    const max = Math.max(rn, gn, bn), min = Math.min(rn, gn, bn);
+    const l = (max + min) / 2;
+    const chroma = max - min;
+    const alphaNorm = a / 255;
+
+    if (alphaNorm < 0.72 && l < 0.55) {
+      semiAlphaDarkCount++;
+    } else if (chroma >= 0.16 && alphaNorm >= 0.45) {
+      colorCount++;
+    } else if (l * alphaNorm < 0.34) {
+      opaqueDarkCount++;
+    } else {
+      brightNeutralCount++;
+    }
+  }
+
+  if (visibleCount === 0) return { kind: 'normal' };
+  const hasTransparency = (transparentCount / totalPixels >= 0.05) || (semiAlphaDarkCount / visibleCount >= 0.12);
+  if (!hasTransparency) return { kind: 'normal' };
+
+  const semiRatio = semiAlphaDarkCount / visibleCount;
+  const darkRatio = (opaqueDarkCount + semiAlphaDarkCount) / visibleCount;
+  const colorRatio = colorCount / visibleCount;
+  const brightRatio = brightNeutralCount / visibleCount;
+
+  // Pure dark monochrome icon / logo / line art (no vivid colors) -> crisp invert
+  if (darkRatio >= 0.78 && colorRatio < 0.10 && brightRatio < 0.15) {
+    return { kind: 'dark-mono' };
+  }
+  // Graphic with semi-transparent dark shapes (Google Material illustrations) -> alpha-lift
+  if (semiRatio >= 0.08) {
+    return { kind: 'alpha-dark' };
+  }
+  return { kind: 'normal' };
+}
+
+async function probeExternalImageKind(url) {
+  if (!/^https?:\/\//i.test(url)) return { kind: 'normal' };
+  if (svgProbeCache.has(url)) return svgProbeCache.get(url);
+
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 3500);
+    const res = await fetch(url, { signal: controller.signal });
+    clearTimeout(timer);
+    if (!res.ok) {
+      const def = { kind: 'normal' };
+      svgProbeCache.set(url, def);
+      return def;
+    }
+
+    const contentType = (res.headers.get('content-type') || '').toLowerCase();
+    let result = { kind: 'normal' };
+
+    if (contentType.includes('svg') || /\.svg(\?|#|$)/i.test(url)) {
+      const text = await res.text();
+      const transformed = transformSvgMarkupColors(text);
+      result = transformed || { kind: 'normal' };
+    } else if (
+      contentType.includes('image/png') ||
+      contentType.includes('image/webp') ||
+      contentType.includes('image/gif') ||
+      contentType.includes('image/avif') ||
+      (contentType.includes('image/') && !contentType.includes('jpeg') && !contentType.includes('jpg'))
+    ) {
+      const blob = await res.blob();
+      if (blob.size > 0 && blob.size <= 3 * 1024 * 1024 && typeof createImageBitmap === 'function' && typeof OffscreenCanvas === 'function') {
+        const bmp = await createImageBitmap(blob);
+        const cw = Math.min(40, Math.max(1, bmp.width));
+        const ch = Math.min(40, Math.max(1, bmp.height));
+        const canvas = new OffscreenCanvas(cw, ch);
+        const ctx = canvas.getContext('2d', { willReadFrequently: true });
+        if (ctx) {
+          ctx.drawImage(bmp, 0, 0, cw, ch);
+          const data = ctx.getImageData(0, 0, cw, ch).data;
+          result = classifyRgbaPixels(data, cw * ch);
+        }
+        if (bmp.close) bmp.close();
+      }
+    }
+
+    if (svgProbeCache.size > 500) svgProbeCache.clear();
+    svgProbeCache.set(url, result);
+    return result;
+  } catch {
+    const def = { kind: 'normal' };
+    svgProbeCache.set(url, def);
+    return def;
+  }
+}
+
+// ---- Dark Mode 0ms Preload Script Registration ----
+const DARKMODE_PRELOAD_ID = 'ar-darkmode-preload';
+const DM_MULTI_PART_TLDS = new Set([
+  'co.uk', 'org.uk', 'ac.uk', 'gov.uk', 'me.uk',
+  'com.au', 'net.au', 'org.au', 'edu.au',
+  'com.bd', 'org.bd', 'net.bd', 'edu.bd', 'gov.bd',
+  'co.jp', 'ne.jp', 'or.jp', 'ac.jp',
+  'co.in', 'net.in', 'org.in', 'ac.in',
+  'com.br', 'com.mx', 'com.cn', 'com.sg', 'com.hk', 'com.tw', 'co.nz', 'co.za', 'co.kr'
+]);
+
+function extractMainDomain(hostname) {
+  const clean = String(hostname || '').toLowerCase().replace(/^www\./, '');
+  if (!clean || /^(\d+\.){3}\d+$/.test(clean) || clean === 'localhost' || !clean.includes('.')) {
+    return clean;
+  }
+  const parts = clean.split('.');
+  if (parts.length <= 2) return clean;
+  const lastTwo = parts.slice(-2).join('.');
+  if (DM_MULTI_PART_TLDS.has(lastTwo) && parts.length >= 3) {
+    return parts.slice(-3).join('.');
+  }
+  return lastTwo;
+}
+
+async function syncDarkModePreloadScript() {
+  try {
+    const { darkModeConfig } = await chrome.storage.local.get('darkModeConfig');
+    const isEnabled = Boolean(darkModeConfig && darkModeConfig.enabled);
+    const siteRules = (darkModeConfig && darkModeConfig.siteRules) || {};
+    const pageRules = (darkModeConfig && darkModeConfig.pageRules) || {};
+
+    const existing = await chrome.scripting.getRegisteredContentScripts({ ids: [DARKMODE_PRELOAD_ID] });
+    if (existing && existing.length > 0) {
+      await chrome.scripting.unregisterContentScripts({ ids: [DARKMODE_PRELOAD_ID] });
+    }
+
+    if (!isEnabled) return;
+
+    const matchSet = new Set();
+    for (const [host, rule] of Object.entries(siteRules)) {
+      if (rule === 'on' && host && !host.includes('/') && !host.includes('*')) {
+        matchSet.add(`*://${host}/*`);
+        matchSet.add(`*://*.${host}/*`);
+      }
+    }
+    for (const [pageUrl, rule] of Object.entries(pageRules)) {
+      if (rule === 'on' && /^https?:\/\//i.test(pageUrl)) {
+        matchSet.add(`${pageUrl}*`);
+      }
+    }
+    const matches = Array.from(matchSet);
+    if (matches.length > 0) {
+      await chrome.scripting.registerContentScripts([
+        {
+          id: DARKMODE_PRELOAD_ID,
+          matches,
+          css: ['darkmode-preload.css'],
+          runAt: 'document_start',
+          allFrames: true,
+          persistAcrossSessions: true
+        }
+      ]);
+    }
+  } catch (err) {
+    console.warn('[darkmode] preload script sync failed:', err);
+  }
+}
 
 // ---- Cross-device settings sync ----
 // Mirrors the user's actual input (jobs, link groups, specific URLs, prefs,
@@ -1099,6 +1576,7 @@ const SYNC_MIRROR_KEYS = [
   'syncDomains',
   'syncToken',
   'syncTimeout',
+  'darkModeConfig',
 ];
 const SYNC_VERSIONS_KEY = '__syncVersions'; // local-only: { [key]: lastSyncedVersion }
 const SYNC_CHUNK_BYTES = 6000;
@@ -1182,6 +1660,9 @@ chrome.storage.onChanged.addListener((changes, area) => {
     for (const key of SYNC_MIRROR_KEYS) {
       if (key in changes) handleLocalMirrorChange(key);
     }
+    if ('darkModeConfig' in changes) {
+      syncDarkModePreloadScript();
+    }
   } else if (area === 'sync') {
     for (const key of SYNC_MIRROR_KEYS) {
       if (`${key}__meta` in changes) reconcileKeyFromSync(key);
@@ -1189,6 +1670,25 @@ chrome.storage.onChanged.addListener((changes, area) => {
   }
 });
 
-chrome.runtime.onStartup.addListener(reconcileAllFromSync);
-chrome.runtime.onInstalled.addListener(reconcileAllFromSync);
+chrome.runtime.onStartup.addListener(() => {
+  reconcileAllFromSync();
+  syncDarkModePreloadScript();
+});
+chrome.runtime.onInstalled.addListener(() => {
+  reconcileAllFromSync();
+  syncDarkModePreloadScript();
+});
 reconcileAllFromSync();
+syncDarkModePreloadScript();
+
+// Automatically notify darkmode.js on EVERY SPA URL change or completed page load
+chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+  if (!tab || !tab.url || !/^https?:\/\//i.test(tab.url)) return;
+  if (changeInfo.url || changeInfo.status === 'complete') {
+    chrome.tabs.sendMessage(tabId, {
+      type: 'darkmode-page-navigated',
+      url: changeInfo.url || tab.url,
+      status: changeInfo.status || ''
+    }).catch(() => {});
+  }
+});
