@@ -1318,6 +1318,7 @@ function transformSvgMarkupColors(text) {
   let hasColor = false;
   let hasDarkNeutral = false;
   let hasSemiAlphaDark = false;
+  let hasExplicitFill = false;
 
   const inspectColor = (r, g, b, a = 1) => {
     const rn = r / 255, gn = g / 255, bn = b / 255;
@@ -1333,11 +1334,17 @@ function transformSvgMarkupColors(text) {
     }
   };
 
-  // 2. Transform dark neutral fills and strokes to crisp light #E8EAED
+  // 2. Transform dark neutral fills/strokes, currentColor, and named black to crisp light #E8EAED
   // while preserving vibrant colored fills (e.g. Google yellow/blue/green/red) 100% untouched!
   transformed = transformed.replace(/(fill|stroke)\s*=\s*["']([^"']+)["']/gi, (match, attr, val) => {
     const trimmed = val.trim();
-    if (!trimmed || trimmed === 'none' || trimmed.startsWith('url(')) return match;
+    const lower = trimmed.toLowerCase();
+    if (!trimmed || lower === 'none' || lower.startsWith('url(')) return match;
+    if (attr.toLowerCase() === 'fill') hasExplicitFill = true;
+    if (lower === 'black' || lower === 'currentcolor') {
+      hasDarkNeutral = true;
+      return `${attr}="#E8EAED"`;
+    }
     const rgba = parseHexToRgba(trimmed) || parseRgbaString(trimmed);
     if (!rgba || rgba.a < 0.05) return match;
     inspectColor(rgba.r, rgba.g, rgba.b, rgba.a);
@@ -1354,7 +1361,13 @@ function transformSvgMarkupColors(text) {
   // 3. Transform CSS style declarations inside <style> tags or inline style=""
   transformed = transformed.replace(/(fill|stroke)\s*:\s*([^;"]+)/gi, (match, prop, val) => {
     const trimmed = val.trim();
-    if (!trimmed || trimmed === 'none' || trimmed.startsWith('url(')) return match;
+    const lower = trimmed.toLowerCase();
+    if (!trimmed || lower === 'none' || lower.startsWith('url(')) return match;
+    if (prop.toLowerCase() === 'fill') hasExplicitFill = true;
+    if (lower === 'black' || lower === 'currentcolor') {
+      hasDarkNeutral = true;
+      return `${prop}: #E8EAED`;
+    }
     const rgba = parseHexToRgba(trimmed) || parseRgbaString(trimmed);
     if (!rgba || rgba.a < 0.05) return match;
     inspectColor(rgba.r, rgba.g, rgba.b, rgba.a);
@@ -1374,6 +1387,12 @@ function transformSvgMarkupColors(text) {
     return `${attr}="0.45"`;
   });
 
+  // 5. SVGs that omit fill default to black in the SVG spec -> inject fill="#E8EAED" on root <svg>
+  if (!hasColor && !hasExplicitFill && /<(path|circle|rect|polygon|polyline|ellipse|text)\b/i.test(transformed)) {
+    transformed = transformed.replace(/<svg\b/i, '<svg fill="#E8EAED"');
+    hasDarkNeutral = true;
+  }
+
   // If the SVG contains dark neutral text/lines alongside colors, or semi-alpha shapes:
   if (hasDarkNeutral || hasSemiAlphaDark || (hasColor && transformed !== text)) {
     const dataUri = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(transformed);
@@ -1381,20 +1400,22 @@ function transformSvgMarkupColors(text) {
   }
 
   // Pure dark monochrome SVG without colors
-  if (!hasColor && (hasDarkNeutral || /<(path|circle|rect|polygon|text)\b/i.test(text))) {
+  if (!hasColor && /<(path|circle|rect|polygon|text)\b/i.test(text)) {
     return { kind: 'dark-mono' };
   }
 
   return { kind: 'normal' };
 }
 
-function classifyRgbaPixels(data, totalPixels) {
+function classifyRgbaPixels(data, cw, ch, origW = 0, origH = 0) {
+  const totalPixels = cw * ch;
   let transparentCount = 0;
   let visibleCount = 0;
   let semiAlphaDarkCount = 0;
   let opaqueDarkCount = 0;
   let colorCount = 0;
   let brightNeutralCount = 0;
+  let pureWhiteCount = 0;
 
   for (let i = 0; i < data.length; i += 4) {
     const a = data[i + 3];
@@ -1417,20 +1438,38 @@ function classifyRgbaPixels(data, totalPixels) {
       opaqueDarkCount++;
     } else {
       brightNeutralCount++;
+      if (l >= 0.93 && chroma < 0.06 && alphaNorm >= 0.9) pureWhiteCount++;
     }
   }
 
   if (visibleCount === 0) return { kind: 'normal' };
-  const hasTransparency = (transparentCount / totalPixels >= 0.05) || (semiAlphaDarkCount / visibleCount >= 0.12);
-  if (!hasTransparency) return { kind: 'normal' };
 
   const semiRatio = semiAlphaDarkCount / visibleCount;
   const darkRatio = (opaqueDarkCount + semiAlphaDarkCount) / visibleCount;
   const colorRatio = colorCount / visibleCount;
   const brightRatio = brightNeutralCount / visibleCount;
+  const whiteRatio = pureWhiteCount / visibleCount;
+
+  const hasTransparency = (transparentCount / totalPixels >= 0.05) || (semiAlphaDarkCount / visibleCount >= 0.12);
+
+  if (!hasTransparency) {
+    // Detect small opaque black-on-white monochrome icons/logos (white corners + dark ink + zero vivid color)
+    const isSmallIcon = origW > 0 && origH > 0 && origW <= 180 && origH <= 180;
+    if (isSmallIcon && colorRatio < 0.06 && whiteRatio >= 0.35 && darkRatio >= 0.08) {
+      const cornerIdx = [0, (cw - 1) * 4, ((ch - 1) * cw) * 4, (totalPixels - 1) * 4];
+      let whiteCorners = 0;
+      for (const idx of cornerIdx) {
+        if (data[idx] > 235 && data[idx + 1] > 235 && data[idx + 2] > 235) whiteCorners++;
+      }
+      if (whiteCorners >= 3) {
+        return { kind: 'dark-mono' };
+      }
+    }
+    return { kind: 'normal' };
+  }
 
   // Pure dark monochrome icon / logo / line art (no vivid colors) -> crisp invert
-  if (darkRatio >= 0.78 && colorRatio < 0.10 && brightRatio < 0.15) {
+  if (darkRatio >= 0.72 && colorRatio < 0.10 && brightRatio < 0.20) {
     return { kind: 'dark-mono' };
   }
   // Graphic with semi-transparent dark shapes (Google Material illustrations) -> alpha-lift
@@ -1479,7 +1518,7 @@ async function probeExternalImageKind(url) {
         if (ctx) {
           ctx.drawImage(bmp, 0, 0, cw, ch);
           const data = ctx.getImageData(0, 0, cw, ch).data;
-          result = classifyRgbaPixels(data, cw * ch);
+          result = classifyRgbaPixels(data, cw, ch, bmp.width, bmp.height);
         }
         if (bmp.close) bmp.close();
       }
@@ -1551,14 +1590,47 @@ function cssHslToRgb(h, s, l) {
   };
 }
 
-function parseSingleCssColor(val) {
-  const s = String(val || '').trim().toLowerCase();
+function parseHslString(str) {
+  if (!str || typeof str !== 'string') return null;
+  const m = str.match(/hsla?\(\s*([\d.]+)(?:deg)?[,\s]+([\d.]+)%[,\s]+([\d.]+)%(?:[\s,/]+([\d.]+%?))?\s*\)/i);
+  if (!m) return null;
+  const h = ((parseFloat(m[1]) % 360) + 360) % 360;
+  const s = Math.max(0, Math.min(1, parseFloat(m[2]) / 100));
+  const l = Math.max(0, Math.min(1, parseFloat(m[3]) / 100));
+  let a = 1;
+  if (m[4] !== undefined) {
+    a = m[4].endsWith('%') ? parseFloat(m[4]) / 100 : parseFloat(m[4]);
+  }
+  const rgb = cssHslToRgb(h, s, l);
+  return { r: rgb.r, g: rgb.g, b: rgb.b, a };
+}
+
+function resolveCssVarExpr(val, cssVarMap) {
+  let out = String(val || '').trim();
+  if (!out.includes('var(')) return out;
+  for (let pass = 0; pass < 3 && out.includes('var('); pass++) {
+    const next = out.replace(/var\(\s*(--[a-zA-Z0-9_-]+)\s*(?:,\s*([^()]+))?\)/g, (_m, name, fb) => {
+      if (cssVarMap && cssVarMap.has(name)) return cssVarMap.get(name);
+      if (fb !== undefined && fb.trim()) return fb.trim();
+      if (/opacity/i.test(name)) return '1';
+      return '';
+    });
+    if (next === out) break;
+    out = next.trim();
+  }
+  return out;
+}
+
+function parseSingleCssColor(val, cssVarMap) {
+  const resolved = resolveCssVarExpr(val, cssVarMap);
+  const s = resolved.trim().toLowerCase();
   if (!s || s === 'none' || s === 'transparent' || s === 'inherit' || s === 'initial' || s === 'unset' || s === 'currentcolor' || s.includes('var(') || s.includes('url(') || s.includes('gradient(')) {
     return null;
   }
   if (CSS_NAMED_COLORS[s]) return CSS_NAMED_COLORS[s];
   if (s.startsWith('#')) return parseHexToRgba(s);
   if (s.startsWith('rgb')) return parseRgbaString(s);
+  if (s.startsWith('hsl')) return parseHslString(s);
   return null;
 }
 
@@ -1566,10 +1638,103 @@ function formatCssRgba(r, g, b, a) {
   return a >= 0.999 ? `rgb(${r},${g},${b})` : `rgba(${r},${g},${b},${Number(a.toFixed(3))})`;
 }
 
-function transformCssDeclarationBlock(decls, isPureBlack) {
+function isDarkMonoIconCssUrl(urlStr) {
+  if (!urlStr) return false;
+  const lower = urlStr.toLowerCase();
+  if (lower.startsWith('data:image/svg+xml')) {
+    try {
+      const idx = urlStr.indexOf(',');
+      if (idx === -1) return false;
+      const meta = urlStr.slice(0, idx).toLowerCase();
+      let svgText = urlStr.slice(idx + 1);
+      svgText = meta.includes('base64') ? atob(svgText) : decodeURIComponent(svgText);
+      const res = transformSvgMarkupColors(svgText);
+      return Boolean(res && (res.kind === 'dark-mono' || res.kind === 'svg-transformed'));
+    } catch {
+      return false;
+    }
+  }
+  // Standard Google Material, Gmail, Workspace, and dark UI icon naming patterns
+  if (/(?:_black_|_dark_|_grey600|_grey700|_grey800|_gm_grey|\/black\/|material\/system_gm\/[^"']*black)/i.test(urlStr)) {
+    return true;
+  }
+  return false;
+}
+
+function transformCssGradientStr(val, isPureBlack) {
+  if (!val || !val.includes('gradient(')) return null;
+  const colorTokens = val.match(/(?:#[0-9a-f]{3,8}\b|rgba?\([^)]+\)|\bwhite\b)/gi);
+  if (!colorTokens || colorTokens.length === 0) return null;
+  let hasLightNeutral = false;
+  for (const tok of colorTokens) {
+    const rgba = parseSingleCssColor(tok);
+    if (!rgba || rgba.a < 0.05) continue;
+    const { l, chroma } = cssRgbToHsl(rgba.r, rgba.g, rgba.b);
+    if (chroma >= 0.22 && l <= 0.74) return null; // Preserve vibrant colored gradients
+    if (l > 0.62) hasLightNeutral = true;
+  }
+  if (!hasLightNeutral) return null;
+  const next = val.replace(/(?:#[0-9a-f]{3,8}\b|rgba?\([^)]+\)|\bwhite\b)/gi, (tok) => {
+    const rgba = parseSingleCssColor(tok);
+    if (!rgba || rgba.a < 0.05) return tok;
+    const { l, chroma } = cssRgbToHsl(rgba.r, rgba.g, rgba.b);
+    if (l > 0.50 && chroma < 0.14) {
+      if (isPureBlack && l >= 0.97) return formatCssRgba(0, 0, 0, rgba.a);
+      const rgb = cssHslToRgb(225, 0.08, isPureBlack ? 0.06 : 0.12);
+      return formatCssRgba(rgb.r, rgb.g, rgb.b, rgba.a);
+    }
+    return tok;
+  });
+  return next !== val ? next : null;
+}
+
+function transformCssBoxShadowStr(val) {
+  if (!val || val === 'none') return null;
+  let changed = false;
+  const isHairline = /(?:inset\s+)?(?:-?\d+px\s+){2}0(?:px)?\s+(?:1|2)px|0(?:px)?\s+0(?:px)?\s+0(?:px)?\s+1px|inset\s+(?:0|-?1px)\s+(?:0|-?1px)\s+0/i.test(val);
+  const next = val.replace(/(?:#[0-9a-f]{3,8}\b|rgba?\([^)]+\)|\b(?:white|black)\b)/gi, (tok) => {
+    const rgba = parseSingleCssColor(tok);
+    if (!rgba || rgba.a < 0.04) return tok;
+    const { l, chroma } = cssRgbToHsl(rgba.r, rgba.g, rgba.b);
+    if (chroma < 0.14) {
+      if (l > 0.55) {
+        changed = true;
+        return formatCssRgba(255, 255, 255, isHairline ? 0.18 : Math.min(rgba.a, 0.12));
+      }
+      if (isHairline && l < 0.25) {
+        changed = true;
+        return formatCssRgba(255, 255, 255, Math.min(0.32, Math.max(0.16, rgba.a * 1.45)));
+      }
+    }
+    return tok;
+  });
+  return changed ? next : null;
+}
+
+function transformCssDeclarationBlock(decls, isPureBlack, cssVarMap, isHoverRule = false) {
   const parts = decls.split(';');
   let ruleHasKeptVibrantBg = false;
+  let ruleHasMaskIcon = false;
+  let ruleHasDarkMonoUrl = false;
   const parsed = [];
+
+  // Pre-scan for mask-image / dark-mono icon URLs (handles Gmail & Material ::before / ::after icons!)
+  for (let i = 0; i < parts.length; i++) {
+    const raw = parts[i].trim();
+    if (!raw) continue;
+    const colonIdx = raw.indexOf(':');
+    if (colonIdx <= 0) continue;
+    const prop = raw.slice(0, colonIdx).trim().toLowerCase();
+    const val = raw.slice(colonIdx + 1).trim();
+    if ((prop === 'mask-image' || prop === '-webkit-mask-image' || prop === 'mask' || prop === '-webkit-mask') && /url\(/i.test(val)) {
+      ruleHasMaskIcon = true;
+    } else if ((prop === 'background-image' || prop === 'background' || prop === 'content') && /url\(/i.test(val)) {
+      const m = val.match(/url\(\s*["']?([^"')]+)["']?\s*\)/i);
+      if (m && m[1] && isDarkMonoIconCssUrl(m[1].trim())) {
+        ruleHasDarkMonoUrl = true;
+      }
+    }
+  }
 
   for (let i = 0; i < parts.length; i++) {
     const raw = parts[i].trim();
@@ -1577,10 +1742,27 @@ function transformCssDeclarationBlock(decls, isPureBlack) {
     const colonIdx = raw.indexOf(':');
     if (colonIdx <= 0) continue;
     const prop = raw.slice(0, colonIdx).trim().toLowerCase();
+    let val = raw.slice(colonIdx + 1).trim();
+    const isImp = /!important\s*$/i.test(val);
+    if (isImp) val = val.replace(/!important\s*$/i, '').trim();
+
+    if (prop === 'background-image' || (prop === 'background' && val.includes('gradient('))) {
+      const nextGrad = transformCssGradientStr(val, isPureBlack);
+      if (nextGrad) parsed.push({ prop: 'background-image', rawCss: nextGrad, isImp });
+      continue;
+    }
+    if (prop === 'box-shadow') {
+      const nextShadow = transformCssBoxShadowStr(val);
+      if (nextShadow) parsed.push({ prop: 'box-shadow', rawCss: nextShadow, isImp });
+      continue;
+    }
+
     if (
       prop !== 'background-color' &&
       prop !== 'background' &&
       prop !== 'color' &&
+      prop !== 'fill' &&
+      prop !== 'stroke' &&
       prop !== 'border-color' &&
       prop !== 'border-top-color' &&
       prop !== 'border-right-color' &&
@@ -1589,13 +1771,10 @@ function transformCssDeclarationBlock(decls, isPureBlack) {
     ) {
       continue;
     }
-    let val = raw.slice(colonIdx + 1).trim();
-    const isImp = /!important\s*$/i.test(val);
-    if (isImp) val = val.replace(/!important\s*$/i, '').trim();
-    const rgba = parseSingleCssColor(val);
-    if (!rgba || rgba.a < 0.05) continue;
+    const rgba = parseSingleCssColor(val, cssVarMap);
+    if (!rgba || rgba.a < 0.04) continue;
 
-    if (prop === 'background-color' || prop === 'background') {
+    if ((prop === 'background-color' || prop === 'background') && !ruleHasMaskIcon) {
       const { l, chroma } = cssRgbToHsl(rgba.r, rgba.g, rgba.b);
       if (chroma >= 0.14 && l <= 0.76) {
         ruleHasKeptVibrantBg = true;
@@ -1610,22 +1789,52 @@ function transformCssDeclarationBlock(decls, isPureBlack) {
   }
 
   const out = [];
+  if (ruleHasDarkMonoUrl) {
+    out.push('filter:invert(1) brightness(1.1)');
+  }
+
   for (const item of parsed) {
-    const { prop, rgba, isImp } = item;
+    const { prop, rgba, isImp, rawCss } = item;
     const imp = isImp ? ' !important' : '';
+    if (rawCss) {
+      out.push(`${prop}:${rawCss}${imp}`);
+      continue;
+    }
     const { h, s, l, chroma } = cssRgbToHsl(rgba.r, rgba.g, rgba.b);
 
     if (prop === 'background-color' || prop === 'background') {
+      if (ruleHasMaskIcon) {
+        // CSS mask-image icon: background-color is the icon ink color!
+        if (chroma < 0.14 && l < 0.68) {
+          const targetL = Math.max(0.75, Math.min(0.95, 0.95 - l * 0.30));
+          const rgb = cssHslToRgb(220, 0.08, targetL);
+          out.push(`background-color:${formatCssRgba(rgb.r, rgb.g, rgb.b, rgba.a)}${imp}`);
+        }
+        continue;
+      }
+      if (isHoverRule && l > 0.50 && chroma < 0.14) {
+        // Hover/focus light background -> subtle translucent dark highlight so icons never wash out!
+        out.push(`background-color:rgba(255,255,255,0.09)${imp}`);
+        continue;
+      }
       if (l > 0.72 && chroma >= 0.04) {
         const targetL = isPureBlack ? 0.14 + (1 - l) * 0.28 : 0.16 + (1 - l) * 0.26;
         const rgb = cssHslToRgb(h, Math.max(0.28, Math.min(0.60, s * 0.65)), Math.min(0.26, targetL));
         out.push(`background-color:${formatCssRgba(rgb.r, rgb.g, rgb.b, rgba.a)}${imp}`);
       } else if (l > 0.50 && chroma < 0.14) {
-        if (isPureBlack) {
-          if (l >= 0.82) {
+        if (isHoverRule) {
+          // Hover/focus states: clean subtle dark tint so white icons & text stay 100% crisp!
+          out.push(`background-color:rgba(255,255,255,0.09)${imp}`);
+        } else if (isPureBlack) {
+          // Preserve distinct surface hierarchy (pure #000 page vs #0b0d11 sidebar/column vs #161920 card/header)
+          if (l >= 0.985) {
             out.push(`background-color:${formatCssRgba(0, 0, 0, rgba.a)}${imp}`);
+          } else if (l >= 0.93) {
+            out.push(`background-color:${formatCssRgba(11, 13, 17, rgba.a)}${imp}`);
+          } else if (l >= 0.82) {
+            out.push(`background-color:${formatCssRgba(22, 25, 32, rgba.a)}${imp}`);
           } else {
-            const rgb = cssHslToRgb(225, 0.08, Math.min(0.12, 0.04 + (1 - l) * 0.15));
+            const rgb = cssHslToRgb(225, 0.10, Math.min(0.18, 0.11 + (0.82 - l) * 0.22));
             out.push(`background-color:${formatCssRgba(rgb.r, rgb.g, rgb.b, rgba.a)}${imp}`);
           }
         } else {
@@ -1633,18 +1842,24 @@ function transformCssDeclarationBlock(decls, isPureBlack) {
           out.push(`background-color:${formatCssRgba(rgb.r, rgb.g, rgb.b, rgba.a)}${imp}`);
         }
       }
-    } else if (prop === 'color') {
-      if (ruleHasKeptVibrantBg) continue;
+    } else if (prop === 'color' || prop === 'fill' || prop === 'stroke') {
+      if (prop === 'color' && ruleHasKeptVibrantBg) continue;
       if (chroma < 0.14 && l < 0.68) {
         const targetL = Math.max(0.72, Math.min(0.95, 0.95 - l * 0.35));
         const rgb = cssHslToRgb(220, 0.08, targetL);
-        out.push(`color:${formatCssRgba(rgb.r, rgb.g, rgb.b, rgba.a)}${imp}`);
+        out.push(`${prop}:${formatCssRgba(rgb.r, rgb.g, rgb.b, rgba.a)}${imp}`);
       }
     } else if (prop.endsWith('color')) {
-      if (chroma < 0.14 && l > 0.55) {
-        const targetL = Math.max(0.18, Math.min(0.30, 0.20 + (1 - l) * 0.25));
-        const rgb = cssHslToRgb(225, 0.08, targetL);
-        out.push(`${prop}:${formatCssRgba(rgb.r, rgb.g, rgb.b, Math.min(rgba.a, 0.85))}${imp}`);
+      if (chroma < 0.14) {
+        if (l > 0.55) {
+          const targetL = Math.max(0.20, Math.min(0.32, 0.22 + (1 - l) * 0.25));
+          const rgb = cssHslToRgb(225, 0.08, targetL);
+          out.push(`${prop}:${formatCssRgba(rgb.r, rgb.g, rgb.b, Math.min(rgba.a, 0.85))}${imp}`);
+        } else if (l < 0.22) {
+          // Semi-transparent dark dividers (e.g. rgba(0,0,0,0.12)) -> crisp subtle light dividers on black!
+          const liftedAlpha = Math.min(0.42, Math.max(0.16, rgba.a * 1.45));
+          out.push(`${prop}:${formatCssRgba(255, 255, 255, liftedAlpha)}${imp}`);
+        }
       }
     }
   }
@@ -1655,6 +1870,19 @@ function buildDarkOverrideFromCssText(cssText, isPureBlack) {
   if (!cssText || cssText.length > 650000) return '';
   const cleaned = cssText.replace(/\/\*[\s\S]*?\*\//g, '');
   const len = cleaned.length;
+
+  // Pre-collect CSS custom property definitions (--foo: #f5f5f5) so var(--foo) hover/surface rules resolve cleanly!
+  const cssVarMap = new Map();
+  const varRe = /(--[a-zA-Z0-9_-]+)\s*:\s*([^;{}]+)/g;
+  let vm;
+  while ((vm = varRe.exec(cleaned)) !== null) {
+    const vName = vm[1];
+    const vVal = vm[2].trim();
+    if (vVal && !cssVarMap.has(vName)) {
+      cssVarMap.set(vName, vVal);
+    }
+  }
+
   let pos = 0;
 
   const parseBlock = (endPos) => {
@@ -1729,7 +1957,8 @@ function buildDarkOverrideFromCssText(cssText, isPureBlack) {
       }
 
       const decls = cleaned.slice(bodyStart, bodyEnd);
-      const transformed = transformCssDeclarationBlock(decls, isPureBlack);
+      const isHoverRule = /:(?:hover|focus|focus-visible|active)\b/i.test(prelude);
+      const transformed = transformCssDeclarationBlock(decls, isPureBlack, cssVarMap, isHoverRule);
       if (transformed) {
         out.push(`${prelude}{${transformed}}`);
       }

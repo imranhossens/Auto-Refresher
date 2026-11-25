@@ -13,6 +13,7 @@
   const BASE_STYLE_ID = '__ar-dm-base-style';
   const FILTER_STYLE_ID = '__ar-dm-filter-style';
   const SHEET_STYLE_ID = '__ar-dm-sheet-overrides';
+  const OVERLAY_ID = '__ar-dm-overlay';
   const TOAST_ID = '__ar-dm-toast';
   const FAST_CACHE_KEY = '__ar_dm_fast_v2';
 
@@ -57,7 +58,7 @@
   ]);
 
   const SVG_SHAPE_TAGS = new Set([
-    'svg', 'path', 'circle', 'ellipse', 'rect', 'polygon', 'polyline', 'line', 'g', 'use', 'stop'
+    'svg', 'path', 'circle', 'ellipse', 'rect', 'polygon', 'polyline', 'line', 'g', 'use', 'stop', 'symbol', 'text', 'tspan'
   ]);
 
   const STYLE_PROPS_TRACKED = [
@@ -351,11 +352,11 @@
       };
     }
 
-    // 4. Light neutral surface (white, off-white, light gray) -> Pure solid #000000 base
+    // 4. Light neutral surface (white, off-white, light gray) -> Pure solid #000000 base with clear column/card separation
     if (l > 0.50) {
       if (isPureBlack) {
-        // Pure solid #000000 for page backgrounds, outer margins, off-white & light gray wrappers
-        if (l >= 0.82) {
+        // Pure white (#ffffff / #fcfcfc) -> pure solid #000000
+        if (l >= 0.985) {
           return {
             changed: true,
             css: formatRgba(0, 0, 0, rgba.a),
@@ -363,10 +364,27 @@
             bgLum: 0
           };
         }
-        // Slightly elevated dark slate (#0d0f14) for cards
-        const inv = 1 - l;
-        const targetL = Math.min(0.12, 0.04 + inv * 0.15);
-        const rgb = hslToRgb(225, 0.08, targetL);
+        // Subtle off-white sidebars, secondary columns, headers (#f8f9fa, #f5f5f7, #f1f3f4) -> #0b0d11
+        if (l >= 0.93) {
+          return {
+            changed: true,
+            css: formatRgba(11, 13, 17, rgba.a),
+            keepText: false,
+            bgLum: 0.004
+          };
+        }
+        // Distinct light-gray cards, chips, table headers, hover rows (#e8eaed, #e5e7eb, #dadce0) -> #161920
+        if (l >= 0.82) {
+          return {
+            changed: true,
+            css: formatRgba(22, 25, 32, rgba.a),
+            keepText: false,
+            bgLum: 0.011
+          };
+        }
+        // Mid-light gray surfaces -> #1e222c..#282d3a
+        const targetL = Math.min(0.18, 0.11 + (0.82 - l) * 0.22);
+        const rgb = hslToRgb(225, 0.10, targetL);
         return {
           changed: true,
           css: formatRgba(rgb.r, rgb.g, rgb.b, rgba.a),
@@ -470,13 +488,17 @@
 
     // Light neutral border (#e5e7eb, #d2d2d7, #fff) -> refined dark border
     if (l > 0.55) {
-      const targetL = Math.max(0.18, Math.min(0.30, 0.20 + (1 - l) * 0.25));
+      const targetL = Math.max(0.20, Math.min(0.32, 0.22 + (1 - l) * 0.25));
       const rgb = hslToRgb(225, 0.08, targetL);
       return formatRgba(rgb.r, rgb.g, rgb.b, Math.min(rgba.a, 0.85));
     }
 
-    // Very dark neutral border (#000, #222) -> lift slightly so borders remain visible
-    if (l < 0.18) {
+    // Dark or semi-transparent dark dividers (e.g. Material/Apple/Notion rgba(0,0,0,0.12)) -> crisp visible divider on black!
+    if (l < 0.22) {
+      if (rgba.a < 0.65) {
+        const liftedAlpha = Math.min(0.42, Math.max(0.16, rgba.a * 1.45));
+        return formatRgba(255, 255, 255, liftedAlpha);
+      }
       const rgb = hslToRgb(225, 0.08, 0.34);
       return formatRgba(rgb.r, rgb.g, rgb.b, rgba.a);
     }
@@ -516,15 +538,22 @@
 
   function transformBoxShadow(shadow) {
     if (!shadow || shadow === 'none') return null;
-    // Mute bright white glow/inset shadows that create harsh halos on dark mode
     let changed = false;
+    // Detect 1px-2px hairline / inset column dividers & card ring shadows (e.g. inset -1px 0 0 rgba(0,0,0,0.12))
+    const isHairline = /(?:inset\s+)?(?:-?\d+px\s+){2}0(?:px)?\s+(?:1|2)px|0(?:px)?\s+0(?:px)?\s+0(?:px)?\s+1px|inset\s+(?:0|-?1px)\s+(?:0|-?1px)\s+0/i.test(shadow);
     const next = shadow.replace(/rgba?\([^)]+\)/gi, (token) => {
       const rgba = parseRgba(token);
-      if (!rgba || rgba.a < 0.05) return token;
+      if (!rgba || rgba.a < 0.04) return token;
       const { l, chroma } = rgbToHsl(rgba.r, rgba.g, rgba.b);
-      if (l > 0.72 && chroma < 0.12) {
-        changed = true;
-        return formatRgba(255, 255, 255, Math.min(rgba.a, 0.09));
+      if (chroma < 0.14) {
+        if (l > 0.55) {
+          changed = true;
+          return formatRgba(255, 255, 255, isHairline ? 0.18 : Math.min(rgba.a, 0.10));
+        }
+        if (isHairline && l < 0.25) {
+          changed = true;
+          return formatRgba(255, 255, 255, Math.min(0.32, Math.max(0.16, rgba.a * 1.45)));
+        }
       }
       return token;
     });
@@ -725,13 +754,15 @@
     }
   }
 
-  function classifyCanvasPixels(data, totalPixels) {
+  function classifyCanvasPixels(data, cw, ch, origW = 0, origH = 0) {
+    const totalPixels = cw * ch;
     let transparentCount = 0;
     let visibleCount = 0;
     let semiAlphaDarkCount = 0;
     let opaqueDarkCount = 0;
     let colorCount = 0;
     let brightNeutralCount = 0;
+    let pureWhiteCount = 0;
 
     for (let i = 0; i < data.length; i += 4) {
       const a = data[i + 3];
@@ -751,26 +782,37 @@
         opaqueDarkCount++;
       } else {
         brightNeutralCount++;
+        if (l >= 0.93 && chroma < 0.06 && alphaNorm >= 0.9) pureWhiteCount++;
       }
     }
 
     if (visibleCount === 0) return 'normal';
-    const hasTransparency = (transparentCount / totalPixels >= 0.05) || (semiAlphaDarkCount / visibleCount >= 0.12);
-    if (!hasTransparency) return 'normal';
 
     const semiRatio = semiAlphaDarkCount / visibleCount;
     const darkRatio = (opaqueDarkCount + semiAlphaDarkCount) / visibleCount;
     const colorRatio = colorCount / visibleCount;
     const brightRatio = brightNeutralCount / visibleCount;
+    const whiteRatio = pureWhiteCount / visibleCount;
 
-    if (darkRatio >= 0.78 && colorRatio < 0.10 && brightRatio < 0.15) {
+    const hasTransparency = (transparentCount / totalPixels >= 0.05) || (semiAlphaDarkCount / visibleCount >= 0.12);
+    if (!hasTransparency) {
+      const isSmallIcon = origW > 0 && origH > 0 && origW <= 180 && origH <= 180;
+      if (isSmallIcon && colorRatio < 0.06 && whiteRatio >= 0.35 && darkRatio >= 0.08) {
+        const cornerIdx = [0, (cw - 1) * 4, ((ch - 1) * cw) * 4, (totalPixels - 1) * 4];
+        let whiteCorners = 0;
+        for (const idx of cornerIdx) {
+          if (data[idx] > 235 && data[idx + 1] > 235 && data[idx + 2] > 235) whiteCorners++;
+        }
+        if (whiteCorners >= 3) return 'dark-mono';
+      }
+      return 'normal';
+    }
+
+    if (darkRatio >= 0.72 && colorRatio < 0.10 && brightRatio < 0.20) {
       return 'dark-mono';
     }
     if (semiRatio >= 0.08) {
       return 'alpha-dark';
-    }
-    if (opaqueDarkCount / visibleCount >= 0.16 && (colorRatio >= 0.05 || brightRatio >= 0.05)) {
-      return 'dark-mixed';
     }
     return 'normal';
   }
@@ -787,7 +829,7 @@
       if (!ctx) return null;
       ctx.drawImage(source, 0, 0, cw, ch);
       const data = ctx.getImageData(0, 0, cw, ch).data;
-      return classifyCanvasPixels(data, cw * ch);
+      return classifyCanvasPixels(data, cw, ch, srcW, srcH);
     } catch {
       return null; // CORS-tainted canvas
     }
@@ -872,22 +914,47 @@
     probeRemoteImageUrl(img, src);
   }
 
+  function isLikelyDarkMonoIconUrl(url) {
+    if (!url) return false;
+    if (url.startsWith('data:image/svg+xml')) {
+      return classifySvgDataUri(url) === 'dark-mono';
+    }
+    return /(?:_black_|_dark_|_grey600|_grey700|_grey800|_gm_grey|\/black\/|material\/system_gm\/[^"']*black)/i.test(url);
+  }
+
   function ensureBgImageGraphicVisibility(el, bgImg, keepText, cs) {
     if (!el || !bgImg || !currentlyApplied || currentConfig.mode === 'dim') return;
-    // Only inspect graphic/icon/illustration containers (avoid innerText & getBoundingClientRect reflows!)
-    if (el.textContent && el.textContent.trim().length > 0) return;
-    const w = cs ? parseFloat(cs.width) : 0;
-    const h = cs ? parseFloat(cs.height) : 0;
-    if (!w || !h || w > 900 || h > 900) return;
-
     const match = bgImg.match(/url\(\s*["']?([^"')]+)["']?\s*\)/i);
     if (!match || !match[1]) return;
     const url = match[1].trim();
     if (!url) return;
 
+    const w = cs ? parseFloat(cs.width) : NaN;
+    const h = cs ? parseFloat(cs.height) : NaN;
+    // Skip huge hero banners; allow 'auto' (NaN) inline icons and elements <= 900px
+    if ((!isNaN(w) && w > 900) || (!isNaN(h) && h > 900)) return;
+    const isSmallIcon = !isNaN(w) && !isNaN(h) && w > 0 && h > 0 && w <= 48 && h <= 48;
+
+    // Only skip elements with visible direct text (unless it's a tiny icon button with screen-reader text)
+    if (!isSmallIcon && el.childNodes.length > 0) {
+      let hasDirectText = false;
+      for (let i = 0; i < el.childNodes.length; i++) {
+        if (el.childNodes[i].nodeType === 3 && el.childNodes[i].nodeValue && el.childNodes[i].nodeValue.trim().length > 0) {
+          hasDirectText = true;
+          break;
+        }
+      }
+      if (hasDirectText) return;
+    }
+
     if (url.startsWith('data:image/svg+xml')) {
       const verdict = classifySvgDataUri(url);
       applyGraphicVerdictFilter(el, verdict);
+      return;
+    }
+
+    if (isLikelyDarkMonoIconUrl(url)) {
+      applyGraphicVerdictFilter(el, 'dark-mono');
       return;
     }
 
@@ -925,6 +992,7 @@
   }
 
   const darkenedIframeDocs = new Set();
+  const darkenedShadowRoots = new Set();
   const remoteCssRequested = new Set();
 
   function processSameOriginIframe(iframe, isPureBlack) {
@@ -960,7 +1028,7 @@
   }
 
   function processElement(el, isAmoled, forceReeval = false) {
-    if (!el || el.nodeType !== 1 || el.id === TOAST_ID) return;
+    if (!el || el.nodeType !== 1 || el.id === TOAST_ID || el.id === OVERLAY_ID) return;
     const tag = el.tagName;
     if (SKIP_TAGS.has(tag)) return;
 
@@ -1249,15 +1317,19 @@
       if (nextShadow) setTrackedStyle(el, 'box-shadow', nextShadow);
     }
 
-    // Walk open Shadow DOM if present
+    // Walk & mirror open Shadow DOM (including adoptedStyleSheets) if present
     if (el.shadowRoot) {
+      if (!darkenedShadowRoots.has(el.shadowRoot)) {
+        darkenedShadowRoots.add(el.shadowRoot);
+        syncStylesheetOverrides(el.shadowRoot, isAmoled);
+      }
       attachRootObserver(el.shadowRoot);
-      queueSubtree(el.shadowRoot);
+      queueSubtree(el.shadowRoot, false);
     }
   }
 
   function queueElement(el, forceReeval = false) {
-    if (!el || el.nodeType !== 1 || el.id === TOAST_ID || SKIP_TAGS.has(el.tagName)) return;
+    if (!el || el.nodeType !== 1 || el.id === TOAST_ID || el.id === OVERLAY_ID || SKIP_TAGS.has(el.tagName)) return;
     const prev = pendingElements.get(el);
     pendingElements.set(el, Boolean(prev || forceReeval));
   }
@@ -1560,19 +1632,8 @@
   function buildBaseCss(config) {
     const mode = config.mode || 'smart';
     if (mode === 'dim') {
-      const brightness = Math.max(50, Math.min(150, Number(config.brightness) || 100));
-      const contrast = Math.max(50, Math.min(150, Number(config.contrast) || 100));
-      const sepia = Math.max(0, Math.min(60, Number(config.sepia) || 0));
-      const grayscale = Math.max(0, Math.min(100, Number(config.grayscale) || 0));
-      const dimBrightness = Math.round(brightness * 0.82);
-      const dimSepia = Math.min(60, sepia + 8);
-      const filters = [`brightness(${dimBrightness}%)`, `contrast(${contrast}%)`, `sepia(${dimSepia}%)`];
-      if (grayscale > 0) filters.push(`grayscale(${grayscale}%)`);
-      return `
-        html {
-          filter: ${filters.join(' ')} !important;
-        }
-      `;
+      // Dim mode uses the non-layout-breaking backdrop-filter overlay instead of html { filter }
+      return '';
     }
 
     const isPureBlack = mode !== 'charcoal';
@@ -1622,6 +1683,13 @@
       [style*="background:white" i] {
         background-color: ${bgBase} !important;
       }
+      /* Suppress bright white hover boxes on ::before / ::after icon overlays */
+      [data-ar-dm-hover-before="1"]::before {
+        background-color: transparent !important;
+      }
+      [data-ar-dm-hover-after="1"]::after {
+        background-color: transparent !important;
+      }
       /* Prevent multiply/darken blend modes from turning images & illustrations black */
       img, svg, canvas, [role="img"], g, path, rect, circle {
         mix-blend-mode: normal !important;
@@ -1658,25 +1726,90 @@
     `;
   }
 
-  function buildFilterTuningCss(config) {
-    if (config.mode === 'dim') return '';
+  // Non-layout-breaking filter overlay (never sets filter on <html>, so position:fixed never breaks!)
+  function syncFilterOverlay(config) {
+    if (!isTopFrame) return;
+    const host = document.documentElement;
+    if (!host) return;
+    const existing = document.getElementById(OVERLAY_ID);
+
+    if (!config || !currentlyApplied) {
+      if (existing) {
+        isInternalMutation = true;
+        try {
+          existing.remove();
+          drainOwnMutationRecords();
+        } finally {
+          isInternalMutation = false;
+        }
+      }
+      return;
+    }
+
+    const mode = config.mode || 'smart';
     const brightness = Math.max(50, Math.min(150, Number(config.brightness) || 100));
     const contrast = Math.max(50, Math.min(150, Number(config.contrast) || 100));
     const sepia = Math.max(0, Math.min(60, Number(config.sepia) || 0));
     const grayscale = Math.max(0, Math.min(100, Number(config.grayscale) || 0));
 
     const parts = [];
-    if (brightness !== 100) parts.push(`brightness(${brightness}%)`);
-    if (contrast !== 100) parts.push(`contrast(${contrast}%)`);
-    if (sepia > 0) parts.push(`sepia(${sepia}%)`);
-    if (grayscale > 0) parts.push(`grayscale(${grayscale}%)`);
+    if (mode === 'dim') {
+      const dimBrightness = Math.round(brightness * 0.82);
+      const dimSepia = Math.min(60, sepia + 8);
+      parts.push(`brightness(${dimBrightness}%)`);
+      if (contrast !== 100) parts.push(`contrast(${contrast}%)`);
+      if (dimSepia > 0) parts.push(`sepia(${dimSepia}%)`);
+      if (grayscale > 0) parts.push(`grayscale(${grayscale}%)`);
+    } else {
+      if (brightness !== 100) parts.push(`brightness(${brightness}%)`);
+      if (contrast !== 100) parts.push(`contrast(${contrast}%)`);
+      if (sepia > 0) parts.push(`sepia(${sepia}%)`);
+      if (grayscale > 0) parts.push(`grayscale(${grayscale}%)`);
+    }
 
-    if (parts.length === 0) return '';
-    return `
-      html {
-        filter: ${parts.join(' ')} !important;
+    if (parts.length === 0) {
+      if (existing) {
+        isInternalMutation = true;
+        try {
+          existing.remove();
+          drainOwnMutationRecords();
+        } finally {
+          isInternalMutation = false;
+        }
       }
-    `;
+      return;
+    }
+
+    const filterVal = parts.join(' ');
+    isInternalMutation = true;
+    try {
+      let el = existing;
+      if (!el) {
+        el = document.createElement('div');
+        el.id = OVERLAY_ID;
+        el.setAttribute('aria-hidden', 'true');
+        Object.assign(el.style, {
+          position: 'fixed',
+          inset: '0',
+          width: '100vw',
+          height: '100vh',
+          pointerEvents: 'none',
+          zIndex: '2147483646',
+          background: 'transparent'
+        });
+        host.appendChild(el);
+      }
+      el.style.backdropFilter = filterVal;
+      el.style.webkitBackdropFilter = filterVal;
+      drainOwnMutationRecords();
+    } finally {
+      isInternalMutation = false;
+    }
+  }
+
+  function buildFilterTuningCss() {
+    // Filter tuning is handled via syncFilterOverlay() to prevent html stacking-context traps
+    return '';
   }
 
   function setOrRemoveStyleInDoc(doc, id, cssText) {
@@ -1739,9 +1872,44 @@
     dimgrey: { r: 105, g: 105, b: 105, a: 1 }
   };
 
-  function parseCssRuleColor(val) {
+  function parseHslColor(str) {
+    if (!str) return null;
+    const m = str.match(/hsla?\(\s*([\d.]+)(?:deg)?[,\s]+([\d.]+)%[,\s]+([\d.]+)%(?:[\s,/]+([\d.]+%?))?\s*\)/i);
+    if (!m) return null;
+    const h = ((parseFloat(m[1]) % 360) + 360) % 360;
+    const s = Math.max(0, Math.min(1, parseFloat(m[2]) / 100));
+    const l = Math.max(0, Math.min(1, parseFloat(m[3]) / 100));
+    let a = 1;
+    if (m[4] !== undefined) {
+      a = m[4].endsWith('%') ? parseFloat(m[4]) / 100 : parseFloat(m[4]);
+    }
+    const rgb = hslToRgb(h, s, l);
+    return { r: rgb.r, g: rgb.g, b: rgb.b, a };
+  }
+
+  function resolveCssRuleVar(val, rootCs) {
+    let out = String(val || '').trim();
+    if (!out.includes('var(')) return out;
+    for (let pass = 0; pass < 3 && out.includes('var('); pass++) {
+      const next = out.replace(/var\(\s*(--[a-zA-Z0-9_-]+)\s*(?:,\s*([^()]+))?\)/g, (_m, name, fb) => {
+        if (rootCs) {
+          const v = rootCs.getPropertyValue(name);
+          if (v && v.trim()) return v.trim();
+        }
+        if (fb !== undefined && fb.trim()) return fb.trim();
+        if (/opacity/i.test(name)) return '1';
+        return '';
+      });
+      if (next === out) break;
+      out = next.trim();
+    }
+    return out;
+  }
+
+  function parseCssRuleColor(val, rootCs) {
     if (!val) return null;
-    const s = val.trim().toLowerCase();
+    const resolved = resolveCssRuleVar(val, rootCs);
+    const s = resolved.trim().toLowerCase();
     if (!s || s === 'none' || s === 'transparent' || s === 'inherit' || s === 'initial' || s === 'unset' || s === 'currentcolor' || s.includes('var(') || s.includes('url(') || s.includes('gradient(')) {
       return null;
     }
@@ -1760,10 +1928,11 @@
       return null;
     }
     if (s.startsWith('rgb')) return parseRgba(s);
+    if (s.startsWith('hsl')) return parseHslColor(s);
     return null;
   }
 
-  function transformCssRulesList(rules, isPureBlack, out) {
+  function transformCssRulesList(rules, isPureBlack, out, rootCs) {
     if (!rules) return;
     for (let i = 0; i < rules.length; i++) {
       const rule = rules[i];
@@ -1772,23 +1941,75 @@
         const st = rule.style;
         const decls = [];
         let keptVibrantBg = false;
+        const isHoverRule = /:(?:hover|focus|focus-visible|active)\b/i.test(rule.selectorText);
+
+        // Detect CSS mask-image icons & dark monochrome pseudo-element icons (::before / ::after)
+        const maskImg = st.getPropertyValue('mask-image') || st.getPropertyValue('-webkit-mask-image') || '';
+        const isMaskIconRule = Boolean(maskImg && /url\(/i.test(maskImg));
+        const bgImgVal = st.backgroundImage || '';
+        const contentVal = st.content || '';
+        let hasDarkMonoIconUrl = false;
+        if (bgImgVal && /url\(/i.test(bgImgVal)) {
+          const m = bgImgVal.match(/url\(\s*["']?([^"')]+)["']?\s*\)/i);
+          if (m && m[1] && isLikelyDarkMonoIconUrl(m[1].trim())) hasDarkMonoIconUrl = true;
+        }
+        if (!hasDarkMonoIconUrl && contentVal && /url\(/i.test(contentVal)) {
+          const m = contentVal.match(/url\(\s*["']?([^"')]+)["']?\s*\)/i);
+          if (m && m[1] && isLikelyDarkMonoIconUrl(m[1].trim())) hasDarkMonoIconUrl = true;
+        }
+        if (hasDarkMonoIconUrl) {
+          decls.push('filter:invert(1) brightness(1.1)');
+        }
+
+        // White fade-out linear-gradient column/edge masks
+        if (bgImgVal && bgImgVal.includes('gradient(')) {
+          const gradRes = transformGradientBackground(bgImgVal, isPureBlack);
+          if (gradRes && gradRes.css) {
+            const imp = st.getPropertyPriority('background-image') ? ' !important' : '';
+            decls.push(`background-image:${gradRes.css}${imp}`);
+          }
+        }
+
+        // Hairline column/card divider box-shadows
+        const shadowVal = st.boxShadow;
+        if (shadowVal && shadowVal !== 'none') {
+          const nextShadow = transformBoxShadow(shadowVal);
+          if (nextShadow) {
+            const imp = st.getPropertyPriority('box-shadow') ? ' !important' : '';
+            decls.push(`box-shadow:${nextShadow}${imp}`);
+          }
+        }
 
         const bgVal = st.backgroundColor;
         if (bgVal) {
-          const rgba = parseCssRuleColor(bgVal);
-          if (rgba && rgba.a >= 0.05) {
-            const bgRes = transformBackgroundColor(rgba, isPureBlack, false);
-            if (bgRes.changed && bgRes.css) {
-              const imp = st.getPropertyPriority('background-color') ? ' !important' : '';
-              decls.push(`background-color:${bgRes.css}${imp}`);
-            } else if (bgRes.keepText) {
-              keptVibrantBg = true;
+          const rgba = parseCssRuleColor(bgVal, rootCs);
+          if (rgba && rgba.a >= 0.04) {
+            if (isMaskIconRule) {
+              const nextIcon = transformForegroundColor(rgba, false, 0);
+              if (nextIcon) {
+                const imp = st.getPropertyPriority('background-color') ? ' !important' : '';
+                decls.push(`background-color:${nextIcon}${imp}`);
+              }
+            } else {
+              const { l, chroma } = rgbToHsl(rgba.r, rgba.g, rgba.b);
+              if (isHoverRule && l > 0.50 && chroma < 0.14) {
+                const imp = st.getPropertyPriority('background-color') ? ' !important' : '';
+                decls.push(`background-color:rgba(255,255,255,0.09)${imp}`);
+              } else {
+                const bgRes = transformBackgroundColor(rgba, isPureBlack, false);
+                if (bgRes.changed && bgRes.css) {
+                  const imp = st.getPropertyPriority('background-color') ? ' !important' : '';
+                  decls.push(`background-color:${bgRes.css}${imp}`);
+                } else if (bgRes.keepText) {
+                  keptVibrantBg = true;
+                }
+              }
             }
           }
         }
 
         if (!keptVibrantBg && st.color) {
-          const cRgba = parseCssRuleColor(st.color);
+          const cRgba = parseCssRuleColor(st.color, rootCs);
           if (cRgba && cRgba.a >= 0.05) {
             const { l, chroma } = rgbToHsl(cRgba.r, cRgba.g, cRgba.b);
             if (chroma < 0.14 && l < 0.68) {
@@ -1801,15 +2022,33 @@
           }
         }
 
+        // SVG fill & stroke rules inside stylesheets
+        const svgPaintProps = ['fill', 'stroke'];
+        for (let s = 0; s < svgPaintProps.length; s++) {
+          const sp = svgPaintProps[s];
+          const sVal = st.getPropertyValue(sp);
+          if (!sVal) continue;
+          const sRgba = parseCssRuleColor(sVal, rootCs);
+          if (!sRgba || sRgba.a < 0.05) continue;
+          const { l, chroma } = rgbToHsl(sRgba.r, sRgba.g, sRgba.b);
+          if (chroma < 0.14 && l < 0.55) {
+            const nextS = transformForegroundColor(sRgba, false, 0);
+            if (nextS) {
+              const imp = st.getPropertyPriority(sp) ? ' !important' : '';
+              decls.push(`${sp}:${nextS}${imp}`);
+            }
+          }
+        }
+
         const borderProps = ['border-top-color', 'border-right-color', 'border-bottom-color', 'border-left-color'];
         for (let b = 0; b < borderProps.length; b++) {
           const bp = borderProps[b];
           const bVal = st.getPropertyValue(bp);
           if (!bVal) continue;
-          const bRgba = parseCssRuleColor(bVal);
-          if (!bRgba || bRgba.a < 0.05) continue;
+          const bRgba = parseCssRuleColor(bVal, rootCs);
+          if (!bRgba || bRgba.a < 0.04) continue;
           const { l, chroma } = rgbToHsl(bRgba.r, bRgba.g, bRgba.b);
-          if (chroma < 0.14 && l > 0.55) {
+          if (chroma < 0.14 && (l > 0.55 || l < 0.22)) {
             const nextB = transformBorderColor(bRgba, false);
             if (nextB) {
               const imp = st.getPropertyPriority(bp) ? ' !important' : '';
@@ -1823,7 +2062,7 @@
         }
       } else if (rule.cssRules && rule.cssRules.length > 0) {
         const inner = [];
-        transformCssRulesList(rule.cssRules, isPureBlack, inner);
+        transformCssRulesList(rule.cssRules, isPureBlack, inner, rootCs);
         if (inner.length > 0) {
           if (rule.type === 4 && rule.conditionText) {
             out.push(`@media ${rule.conditionText}{${inner.join('')}}`);
@@ -1837,14 +2076,29 @@
     }
   }
 
-  function syncStylesheetOverrides(doc, isPureBlack) {
-    if (!doc || !currentlyApplied || currentConfig.mode === 'dim') return;
+  function syncStylesheetOverrides(rootOrDoc, isPureBlack) {
+    if (!rootOrDoc || !currentlyApplied || currentConfig.mode === 'dim') return;
+    const isShadow = typeof ShadowRoot !== 'undefined' && rootOrDoc instanceof ShadowRoot;
     const out = [];
-    const sheets = doc.styleSheets;
-    if (!sheets) return;
+    let rootCs = null;
+    try {
+      const targetRoot = isShadow ? rootOrDoc.host : (rootOrDoc.documentElement || document.documentElement);
+      if (targetRoot) rootCs = getComputedStyle(targetRoot);
+    } catch {}
 
-    for (let i = 0; i < sheets.length; i++) {
-      const sheet = sheets[i];
+    // 1. Collect standard styleSheets + constructible adoptedStyleSheets (Lit, Polymer, YouTube, Web Components)
+    const allSheets = [];
+    if (rootOrDoc.styleSheets) {
+      for (let i = 0; i < rootOrDoc.styleSheets.length; i++) allSheets.push(rootOrDoc.styleSheets[i]);
+    }
+    try {
+      if (rootOrDoc.adoptedStyleSheets && rootOrDoc.adoptedStyleSheets.length > 0) {
+        for (let i = 0; i < rootOrDoc.adoptedStyleSheets.length; i++) allSheets.push(rootOrDoc.adoptedStyleSheets[i]);
+      }
+    } catch {}
+
+    for (let i = 0; i < allSheets.length; i++) {
+      const sheet = allSheets[i];
       if (!sheet) continue;
       const owner = sheet.ownerNode;
       if (
@@ -1860,27 +2114,27 @@
       try {
         const rules = sheet.cssRules;
         if (rules && rules.length > 0) {
-          transformCssRulesList(rules, isPureBlack, out);
+          transformCssRulesList(rules, isPureBlack, out, rootCs);
         }
       } catch {
         // Cross-origin CDN stylesheet (e.g. Gmail gstatic.com / Outlook CDN) -> transform proactively in background.js!
         const href = sheet.href;
         const reqKey = `${isPureBlack ? '1' : '0'}|${href}`;
-        if (href && /^https?:\/\//i.test(href) && !remoteCssRequested.has(reqKey)) {
+        if (!isShadow && href && /^https?:\/\//i.test(href) && !remoteCssRequested.has(reqKey)) {
           remoteCssRequested.add(reqKey);
           try {
             chrome.runtime.sendMessage(
               { type: 'darkmode-transform-css', url: href, isPureBlack },
               (res) => {
                 if (chrome.runtime.lastError || !res || !res.css || !currentlyApplied || currentConfig.mode === 'dim') return;
-                if (!doc.documentElement) return;
-                let styleEl = doc.querySelector(`style[data-ar-dm-remote-sheet="${CSS.escape(href)}"]`);
+                if (!rootOrDoc.documentElement) return;
+                let styleEl = rootOrDoc.querySelector(`style[data-ar-dm-remote-sheet="${CSS.escape(href)}"]`);
                 isInternalMutation = true;
                 try {
                   if (!styleEl) {
-                    styleEl = doc.createElement('style');
+                    styleEl = rootOrDoc.createElement('style');
                     styleEl.setAttribute('data-ar-dm-remote-sheet', href);
-                    (doc.head || doc.documentElement).appendChild(styleEl);
+                    (rootOrDoc.head || rootOrDoc.documentElement).appendChild(styleEl);
                   }
                   if (styleEl.textContent !== res.css) {
                     styleEl.textContent = res.css;
@@ -1897,10 +2151,34 @@
     }
 
     const combinedCss = out.join('');
-    setOrRemoveStyleInDoc(doc, SHEET_STYLE_ID, combinedCss);
+    if (isShadow) {
+      let el = rootOrDoc.getElementById ? rootOrDoc.getElementById(SHEET_STYLE_ID) : rootOrDoc.querySelector(`#${SHEET_STYLE_ID}`);
+      if (!combinedCss) {
+        if (el) {
+          isInternalMutation = true;
+          try { el.remove(); drainOwnMutationRecords(); } finally { isInternalMutation = false; }
+        }
+        return;
+      }
+      isInternalMutation = true;
+      try {
+        if (!el) {
+          el = document.createElement('style');
+          el.id = SHEET_STYLE_ID;
+          rootOrDoc.appendChild(el);
+        }
+        if (el.textContent !== combinedCss) el.textContent = combinedCss;
+        drainOwnMutationRecords();
+      } finally {
+        isInternalMutation = false;
+      }
+      return;
+    }
+
+    setOrRemoveStyleInDoc(rootOrDoc, SHEET_STYLE_ID, combinedCss);
     // Keep our override style tag at the very end of <head> so equal-specificity rules win cleanly
-    const sheetEl = doc.getElementById(SHEET_STYLE_ID);
-    const head = doc.head;
+    const sheetEl = rootOrDoc.getElementById(SHEET_STYLE_ID);
+    const head = rootOrDoc.head;
     if (sheetEl && head && head.lastElementChild !== sheetEl) {
       isInternalMutation = true;
       try {
@@ -2009,6 +2287,110 @@
     return { active: globalActive, source: globalActive ? 'global' : 'off' };
   }
 
+  // ---- Instant Hover / Focus Guard (Prevents Bright White Hover Squares Over Icons!) ----
+  const hoverRestores = new Map(); // el -> { value, priority }
+  let hoverGuardAttached = false;
+
+  function restoreHoverElement(el) {
+    const saved = hoverRestores.get(el);
+    if (!saved || !el) return;
+    hoverRestores.delete(el);
+    isInternalMutation = true;
+    try {
+      if (saved.hasBg && el.style) {
+        if (saved.value) {
+          el.style.setProperty('background-color', saved.value, saved.priority || '');
+        } else {
+          el.style.removeProperty('background-color');
+        }
+      }
+      if (saved.pseudoBefore) el.removeAttribute('data-ar-dm-hover-before');
+      if (saved.pseudoAfter) el.removeAttribute('data-ar-dm-hover-after');
+      drainOwnMutationRecords();
+    } finally {
+      isInternalMutation = false;
+    }
+  }
+
+  function clearAllHoverOverrides() {
+    for (const el of Array.from(hoverRestores.keys())) {
+      restoreHoverElement(el);
+    }
+  }
+
+  function isBrightNeutralBg(bgStr) {
+    const bg = parseRgba(bgStr);
+    if (!bg || bg.a < 0.08) return false;
+    const { l, chroma } = rgbToHsl(bg.r, bg.g, bg.b);
+    return l > 0.50 && chroma < 0.14;
+  }
+
+  function handleHoverOrFocusIn(e) {
+    if (!currentlyApplied || currentConfig.mode === 'dim') return;
+    let node = e.target;
+    if (!node || node.nodeType !== 1) return;
+    let depth = 0;
+    while (node && node.nodeType === 1 && depth < 4) {
+      if (node === document.body || node === document.documentElement || node.id === TOAST_ID || node.id === OVERLAY_ID) break;
+      if (!hoverRestores.has(node) && !SKIP_TAGS.has(node.tagName)) {
+        try {
+          const cs = getComputedStyle(node);
+          const needBg = isBrightNeutralBg(cs.backgroundColor);
+          const beforeCs = getComputedStyle(node, '::before');
+          const afterCs = getComputedStyle(node, '::after');
+          const needBefore = Boolean(beforeCs && beforeCs.content !== 'none' && isBrightNeutralBg(beforeCs.backgroundColor));
+          const needAfter = Boolean(afterCs && afterCs.content !== 'none' && isBrightNeutralBg(afterCs.backgroundColor));
+
+          if (needBg || needBefore || needAfter) {
+            hoverRestores.set(node, {
+              hasBg: needBg,
+              value: needBg ? node.style.getPropertyValue('background-color') : '',
+              priority: needBg ? node.style.getPropertyPriority('background-color') : '',
+              pseudoBefore: needBefore,
+              pseudoAfter: needAfter
+            });
+            const w = parseFloat(cs.width) || 0;
+            const h = parseFloat(cs.height) || 0;
+            const isSmallIconBtn = w > 0 && w <= 72 && h > 0 && h <= 72;
+            const hoverBg = isSmallIconBtn ? 'transparent' : 'rgb(20, 23, 30)';
+            isInternalMutation = true;
+            try {
+              if (needBg) {
+                node.style.setProperty('background-color', hoverBg, 'important');
+                markStyledThisFrame(node);
+              }
+              if (needBefore) node.setAttribute('data-ar-dm-hover-before', '1');
+              if (needAfter) node.setAttribute('data-ar-dm-hover-after', '1');
+              drainOwnMutationRecords();
+            } finally {
+              isInternalMutation = false;
+            }
+            const targetRef = node;
+            targetRef.addEventListener('pointerleave', () => restoreHoverElement(targetRef), { once: true });
+            targetRef.addEventListener('focusout', () => restoreHoverElement(targetRef), { once: true });
+          }
+        } catch {}
+      }
+      node = node.parentElement;
+      depth++;
+    }
+  }
+
+  function attachHoverGuard() {
+    if (hoverGuardAttached) return;
+    hoverGuardAttached = true;
+    document.addEventListener('pointerover', handleHoverOrFocusIn, { passive: true, capture: true });
+    document.addEventListener('focusin', handleHoverOrFocusIn, { passive: true, capture: true });
+  }
+
+  function detachHoverGuard() {
+    if (!hoverGuardAttached) return;
+    hoverGuardAttached = false;
+    document.removeEventListener('pointerover', handleHoverOrFocusIn, { capture: true });
+    document.removeEventListener('focusin', handleHoverOrFocusIn, { capture: true });
+    clearAllHoverOverrides();
+  }
+
   // ---- Main Apply / Revert Lifecycle ----
 
   function startDynamicEngine(config) {
@@ -2020,12 +2402,14 @@
 
     if (config.mode === 'dim') {
       disconnectAllObservers();
+      detachHoverGuard();
       restoreAllElements();
       removeAllSheetOverrides(document);
       html.setAttribute('data-ar-dm-painted', '1');
       return;
     }
 
+    attachHoverGuard();
     const isPureBlack = config.mode !== 'charcoal';
     syncStylesheetOverrides(document, isPureBlack);
 
@@ -2092,6 +2476,7 @@
         setOrRemoveStyle(BASE_STYLE_ID, buildBaseCss(config));
         setOrRemoveStyle(FILTER_STYLE_ID, buildFilterTuningCss(config));
       }
+      syncFilterOverlay(config);
     } else {
       currentlyApplied = false;
       appliedMode = null;
@@ -2099,9 +2484,18 @@
       html.removeAttribute('data-ar-dm-ready');
       html.removeAttribute('data-ar-dm-painted');
       disconnectAllObservers();
+      detachHoverGuard();
       restoreAllElements();
       removeAllSheetOverrides(document);
+      syncFilterOverlay(null);
       remoteCssRequested.clear();
+      for (const sr of darkenedShadowRoots) {
+        try {
+          const el = sr.getElementById ? sr.getElementById(SHEET_STYLE_ID) : sr.querySelector(`#${SHEET_STYLE_ID}`);
+          if (el) el.remove();
+        } catch {}
+      }
+      darkenedShadowRoots.clear();
       for (const idoc of darkenedIframeDocs) {
         try {
           setOrRemoveStyleInDoc(idoc, BASE_STYLE_ID, '');
